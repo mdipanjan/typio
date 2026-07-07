@@ -12,7 +12,7 @@ import { AgentSession, type AgentProvider, type AgentSignal, type IActiveClient,
 import { ActionType, type ChatAction } from '../../common/state/sessionActions.js';
 import type { ResolveSessionConfigResult, SessionConfigCompletionsResult } from '../../common/state/protocol/commands.js';
 import type { AgentSelection, MessageAttachment, ModelSelection, ProtectedResourceMetadata, ToolDefinition } from '../../common/state/protocol/state.js';
-import { MessageKind, parseChatUri, PendingMessageKind, type ChatInputAnswer, ChatInputResponseKind, type ClientPluginCustomization, type ToolCallResult, type Turn } from '../../common/state/sessionState.js';
+import { ChatInputAnswerState, ChatInputAnswerValueKind, ChatInputQuestionKind, MessageKind, parseChatUri, PendingMessageKind, ResponsePartKind, type ChatInputAnswer, type ChatInputRequest, ChatInputResponseKind, type ClientPluginCustomization, type ToolCallResult, type Turn } from '../../common/state/sessionState.js';
 import { PiRpcClient, type PiRpcMessage, type PiRpcObject } from './piRpcClient.js';
 import { mapPiRpcEventToActions, startPiTurn, type IPiTurnMapState } from './piEventMapper.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -44,6 +44,7 @@ interface IPiSessionClient {
 	readonly onDidExit: Event<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }>;
 	readonly stderr: string;
 	request(type: string, payload?: PiRpcObject): Promise<PiRpcMessage>;
+	send?(type: string, payload?: PiRpcObject): void;
 	dispose(): void;
 }
 
@@ -70,6 +71,7 @@ export class PiAgent extends Disposable implements IAgent {
 	readonly models: IObservable<readonly IAgentModelInfo[]> = this._models;
 
 	private readonly _sessions = new Map<string, IPiSessionRecord>();
+	private readonly _pendingExtensionRequests = new Map<string, { readonly client: IPiSessionClient; readonly method: string }>();
 	private _nextSessionId = 1;
 
 	constructor(private readonly _createClient: PiClientFactory = options => PiRpcClient.spawn({ cwd: options.cwd })) {
@@ -199,8 +201,17 @@ export class PiAgent extends Disposable implements IAgent {
 		// Pi RPC permission mapping will be introduced with subprocess support.
 	}
 
-	respondToUserInputRequest(_requestId: string, _response: ChatInputResponseKind, _answers?: Record<string, ChatInputAnswer>): void {
-		// Pi RPC user-input mapping will be introduced with subprocess support.
+	respondToUserInputRequest(requestId: string, response: ChatInputResponseKind, answers?: Record<string, ChatInputAnswer>): void {
+		const pending = this._pendingExtensionRequests.get(requestId);
+		if (!pending) {
+			return;
+		}
+		this._pendingExtensionRequests.delete(requestId);
+		if (response === ChatInputResponseKind.Cancel || response === ChatInputResponseKind.Decline) {
+			pending.client.send?.('extension_ui_response', { id: requestId, cancelled: true });
+			return;
+		}
+		pending.client.send?.('extension_ui_response', extensionUiResponsePayload(requestId, pending.method, answers));
 	}
 
 	async listSessions(): Promise<IAgentSessionMetadata[]> {
@@ -264,6 +275,10 @@ export class PiAgent extends Disposable implements IAgent {
 	}
 
 	private _handlePiEvent(record: IPiSessionRecord, event: PiRpcMessage): void {
+		if (event.type === 'extension_ui_request') {
+			this._handleExtensionUiRequest(record, event);
+			return;
+		}
 		let activeTurn = record.activeTurn;
 		if (!activeTurn) {
 			const queuedTurn = record.queuedTurns[0];
@@ -283,6 +298,29 @@ export class PiAgent extends Disposable implements IAgent {
 		if (activeTurn.state.completed) {
 			record.activeTurn = undefined;
 		}
+	}
+
+	private _handleExtensionUiRequest(record: IPiSessionRecord, event: PiRpcMessage): void {
+		const activeTurn = record.activeTurn;
+		if (!activeTurn || typeof event.id !== 'string' || typeof event.method !== 'string') {
+			return;
+		}
+		if (event.method === 'notify' || event.method === 'setStatus' || event.method === 'setWidget' || event.method === 'setTitle' || event.method === 'set_editor_text') {
+			const message = extensionUiNotificationText(event);
+			if (message) {
+				this._fireChatAction(activeTurn.chat, {
+					type: ActionType.ChatResponsePart,
+					turnId: activeTurn.state.turnId,
+					part: { kind: ResponsePartKind.SystemNotification, content: message },
+				});
+			}
+			return;
+		}
+		this._pendingExtensionRequests.set(event.id, { client: record.client, method: event.method });
+		this._fireChatAction(activeTurn.chat, {
+			type: ActionType.ChatInputRequested,
+			request: extensionUiInputRequest(event),
+		});
 	}
 
 	private _handlePiExit(record: IPiSessionRecord, exit: { readonly code: number | null; readonly signal: NodeJS.Signals | null }): void {
@@ -345,6 +383,83 @@ export class PiAgent extends Disposable implements IAgent {
 		}
 		return record;
 	}
+}
+
+function extensionUiInputRequest(event: PiRpcMessage): ChatInputRequest {
+	const id = typeof event.id === 'string' ? event.id : generateUuid();
+	const title = typeof event.title === 'string' ? event.title : 'Pi needs input';
+	const message = typeof event.message === 'string' ? event.message : title;
+	if (event.method === 'select') {
+		const options = Array.isArray(event.options) ? event.options.filter(option => typeof option === 'string') : [];
+		return {
+			id,
+			message: title,
+			questions: [{
+				id: 'value',
+				kind: ChatInputQuestionKind.SingleSelect,
+				message,
+				title,
+				required: true,
+				options: options.map(option => ({ id: option, label: option })),
+			}],
+		};
+	}
+	if (event.method === 'confirm') {
+		return {
+			id,
+			message: title,
+			questions: [{ id: 'confirmed', kind: ChatInputQuestionKind.Boolean, message, title, required: true }],
+		};
+	}
+	return {
+		id,
+		message: title,
+		questions: [{
+			id: 'value',
+			kind: ChatInputQuestionKind.Text,
+			message,
+			title,
+			required: true,
+			defaultValue: typeof event.prefill === 'string' ? event.prefill : undefined,
+		}],
+	};
+}
+
+function extensionUiResponsePayload(id: string, method: string, answers?: Record<string, ChatInputAnswer>): PiRpcObject {
+	if (method === 'confirm') {
+		return { id, confirmed: getBooleanAnswer(answers?.confirmed) ?? false };
+	}
+	return { id, value: getStringAnswer(answers?.value) ?? '' };
+}
+
+function getStringAnswer(answer: ChatInputAnswer | undefined): string | undefined {
+	if (!answer || answer.state !== ChatInputAnswerState.Submitted || answer.value.kind !== ChatInputAnswerValueKind.Text && answer.value.kind !== ChatInputAnswerValueKind.Selected) {
+		return undefined;
+	}
+	return answer.value.value;
+}
+
+function getBooleanAnswer(answer: ChatInputAnswer | undefined): boolean | undefined {
+	if (!answer || answer.state !== ChatInputAnswerState.Submitted || answer.value.kind !== ChatInputAnswerValueKind.Boolean) {
+		return undefined;
+	}
+	return answer.value.value;
+}
+
+function extensionUiNotificationText(event: PiRpcMessage): string | undefined {
+	if (event.method === 'setStatus') {
+		return typeof event.statusText === 'string' ? event.statusText : undefined;
+	}
+	if (event.method === 'setTitle') {
+		return typeof event.title === 'string' ? event.title : undefined;
+	}
+	if (event.method === 'setWidget') {
+		return Array.isArray(event.widgetLines) ? event.widgetLines.filter(line => typeof line === 'string').join('\n') : undefined;
+	}
+	if (event.method === 'set_editor_text') {
+		return typeof event.text === 'string' ? event.text : undefined;
+	}
+	return typeof event.message === 'string' ? event.message : undefined;
 }
 
 function removeQueuedTurn(record: IPiSessionRecord, id: string): void {

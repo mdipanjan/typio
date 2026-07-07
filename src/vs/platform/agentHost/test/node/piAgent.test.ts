@@ -118,11 +118,12 @@ suite('PiAgent', () => {
 			client.fireEvent({ type: 'agent_end' });
 
 			disposable.dispose();
-			assert.strictEqual(signals.length, 4);
+			assert.strictEqual(signals.length, 5);
 			assert.deepStrictEqual(signals.map(signal => (signal as { action: { type: string } }).action.type), [
 				'chat/turnStarted',
 				'chat/responsePart',
 				'chat/delta',
+				'chat/activityChanged',
 				'chat/turnComplete',
 			]);
 		} finally {
@@ -177,6 +178,7 @@ suite('PiAgent', () => {
 			assert.deepStrictEqual(signals.map(signal => (signal as { action: { type: string } }).action.type), [
 				'chat/turnStarted',
 				'chat/pendingMessageSet',
+				'chat/activityChanged',
 				'chat/turnComplete',
 				'chat/pendingMessageRemoved',
 				'chat/turnStarted',
