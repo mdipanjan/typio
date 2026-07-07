@@ -8,6 +8,7 @@ import { Emitter } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { AgentSession } from '../../common/agentService.js';
+import { ActionType } from '../../common/state/sessionActions.js';
 import { buildDefaultChatUri } from '../../common/state/sessionState.js';
 import { PiAgent, PI_AGENT_PROVIDER_ID } from '../../node/pi/piAgent.js';
 import type { PiRpcMessage, PiRpcObject } from '../../node/pi/piRpcClient.js';
@@ -20,14 +21,22 @@ class FakePiSessionClient {
 	readonly stderr = '';
 	readonly requests: { readonly type: string; readonly payload?: PiRpcObject }[] = [];
 	disposed = false;
+	requestError: Error | undefined;
 
 	async request(type: string, payload?: PiRpcObject): Promise<PiRpcMessage> {
 		this.requests.push({ type, payload });
+		if (this.requestError) {
+			throw this.requestError;
+		}
 		return { type: 'response', success: true };
 	}
 
 	fireEvent(event: PiRpcMessage): void {
 		this._onDidEvent.fire(event);
+	}
+
+	fireExit(code: number | null, signal: NodeJS.Signals | null = null): void {
+		this._onDidExit.fire({ code, signal });
 	}
 
 	dispose(): void {
@@ -116,6 +125,75 @@ suite('PiAgent', () => {
 				'chat/delta',
 				'chat/turnComplete',
 			]);
+		} finally {
+			agent.dispose();
+		}
+	});
+
+	test('surfaces prompt failures as chat errors', async () => {
+		const client = new FakePiSessionClient();
+		const agent = new PiAgent(() => client);
+		try {
+			const signals: unknown[] = [];
+			const disposable = agent.onDidSessionProgress(signal => signals.push(signal));
+			const { session } = await agent.createSession({ workingDirectory: URI.file('/tmp/project') });
+			const chat = URI.parse(buildDefaultChatUri(session));
+			client.requestError = new Error('not logged in');
+
+			await assert.rejects(agent.chats.sendMessage(chat, 'hello', undefined, 'turn-1'), /not logged in/);
+
+			disposable.dispose();
+			const errorSignal = signals.find(signal => (signal as { action: { type: string } }).action.type === ActionType.ChatError);
+			assert.ok(errorSignal);
+			assert.match((errorSignal as { action: { error: { message: string } } }).action.error.message, /Sign in to Pi|not logged in/);
+		} finally {
+			agent.dispose();
+		}
+	});
+
+	test('rejects concurrent prompts in the same Pi session', async () => {
+		const client = new FakePiSessionClient();
+		const agent = new PiAgent(() => client);
+		try {
+			const { session } = await agent.createSession({ workingDirectory: URI.file('/tmp/project') });
+			const chat = URI.parse(buildDefaultChatUri(session));
+
+			await agent.chats.sendMessage(chat, 'first');
+
+			await assert.rejects(agent.chats.sendMessage(chat, 'second'), /already running/);
+		} finally {
+			agent.dispose();
+		}
+	});
+
+	test('turns active prompts into chat errors when the Pi process exits', async () => {
+		const client = new FakePiSessionClient();
+		const agent = new PiAgent(() => client);
+		try {
+			const signals: unknown[] = [];
+			const disposable = agent.onDidSessionProgress(signal => signals.push(signal));
+			const { session } = await agent.createSession({ workingDirectory: URI.file('/tmp/project') });
+			const chat = URI.parse(buildDefaultChatUri(session));
+
+			await agent.chats.sendMessage(chat, 'hello', undefined, 'turn-1');
+			client.fireExit(1);
+
+			disposable.dispose();
+			const errorSignal = signals.find(signal => (signal as { action: { type: string } }).action.type === ActionType.ChatError);
+			assert.ok(errorSignal);
+			assert.match((errorSignal as { action: { error: { message: string } } }).action.error.message, /Pi RPC process exited with code 1/);
+		} finally {
+			agent.dispose();
+		}
+	});
+
+	test('reports a helpful startup error when Pi is missing', async () => {
+		const client = new FakePiSessionClient();
+		client.requestError = Object.assign(new Error('spawn pi ENOENT'), { code: 'ENOENT' });
+		const agent = new PiAgent(() => client);
+		try {
+			await assert.rejects(agent.createSession({ workingDirectory: URI.file('/tmp/project') }), /Pi CLI was not found/);
+			assert.strictEqual(client.disposed, true);
 		} finally {
 			agent.dispose();
 		}

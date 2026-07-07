@@ -9,7 +9,7 @@ import { type IObservable, observableValue } from '../../../../base/common/obser
 import { basename } from '../../../../base/common/path.js';
 import { URI } from '../../../../base/common/uri.js';
 import { AgentSession, type AgentProvider, type AgentSignal, type IActiveClient, type IAgent, type IAgentChats, type IAgentCreateChatForkSource, type IAgentCreateChatOptions, type IAgentCreateChatResult, type IAgentCreateSessionConfig, type IAgentCreateSessionResult, type IAgentDescriptor, type IAgentModelInfo, type IAgentResolveSessionConfigParams, type IAgentSessionConfigCompletionsParams, type IAgentSessionMetadata } from '../../common/agentService.js';
-import type { ChatAction } from '../../common/state/sessionActions.js';
+import { ActionType, type ChatAction } from '../../common/state/sessionActions.js';
 import type { ResolveSessionConfigResult, SessionConfigCompletionsResult } from '../../common/state/protocol/commands.js';
 import type { AgentSelection, MessageAttachment, ModelSelection, ProtectedResourceMetadata, ToolDefinition } from '../../common/state/protocol/state.js';
 import { parseChatUri, type ChatInputAnswer, ChatInputResponseKind, type ClientPluginCustomization, type ToolCallResult, type Turn } from '../../common/state/sessionState.js';
@@ -28,6 +28,7 @@ interface IPiSessionRecord {
 	readonly client: IPiSessionClient;
 	readonly disposables: DisposableStore;
 	activeTurn?: { readonly chat: URI; readonly state: IPiTurnMapState };
+	disposing?: boolean;
 }
 
 interface IPiSessionClient {
@@ -47,11 +48,9 @@ type PiClientFactory = (options: IPiClientFactoryOptions) => IPiSessionClient;
 /**
  * First Typio-owned Agent Host provider.
  *
- * This initial implementation intentionally stops at the Agent Host provider
- * boundary: it advertises Pi as a selectable agent and owns in-memory session
- * metadata, but it does not yet spawn `pi --mode rpc`. Keeping this skeleton
- * small lets us validate registration, picker wiring, and the broad IAgent
- * contract before adding subprocess lifecycle and event mapping.
+ * This implementation keeps Pi behind the Agent Host provider boundary:
+ * Typio starts `pi --mode rpc` locally and lets Pi own auth, subscriptions,
+ * provider configuration, and tool policy.
  */
 export class PiAgent extends Disposable implements IAgent {
 	readonly id: AgentProvider = PI_AGENT_PROVIDER_ID;
@@ -81,6 +80,9 @@ export class PiAgent extends Disposable implements IAgent {
 		},
 		sendMessage: async (chat: URI, prompt: string, _attachments?: readonly MessageAttachment[], turnId?: string, _senderClientId?: string): Promise<void> => {
 			const record = this._getRecordForChat(chat);
+			if (record.activeTurn) {
+				throw new Error('Pi Agent already has a prompt running in this session. Wait for it to finish or abort it before sending another prompt.');
+			}
 			record.modifiedTime = Date.now();
 			const state: IPiTurnMapState = { turnId: turnId ?? generateUuid(), prompt, toolCalls: new Map() };
 			record.activeTurn = { chat, state };
@@ -89,12 +91,18 @@ export class PiAgent extends Disposable implements IAgent {
 				await record.client.request('prompt', { message: prompt });
 			} catch (error) {
 				record.activeTurn = undefined;
+				this._fireChatAction(chat, createPiChatError(state.turnId, error, record.client.stderr));
 				throw error;
 			}
 		},
 		abort: async (chat: URI): Promise<void> => {
 			const record = this._getRecordForChat(chat);
+			const activeTurn = record.activeTurn;
 			await record.client.request('abort');
+			if (activeTurn) {
+				this._fireChatAction(activeTurn.chat, { type: ActionType.ChatTurnCancelled, turnId: activeTurn.state.turnId });
+				record.activeTurn = undefined;
+			}
 		},
 		changeModel: async (chat: URI, _model: ModelSelection): Promise<void> => {
 			this._assertKnownChat(chat);
@@ -126,12 +134,12 @@ export class PiAgent extends Disposable implements IAgent {
 			await client.request('get_state');
 		} catch (error) {
 			client.dispose();
-			throw new Error(`Pi Agent failed to start. Make sure Pi is installed and configured. ${error instanceof Error ? error.message : String(error)}`);
+			throw new Error(formatPiSetupError(error, client.stderr));
 		}
 		const disposables = new DisposableStore();
 		const record: IPiSessionRecord = { session, startTime: now, modifiedTime: now, workingDirectory, summary, client, disposables };
 		disposables.add(client.onDidEvent(event => this._handlePiEvent(record, event)));
-		disposables.add(client.onDidExit(() => record.activeTurn = undefined));
+		disposables.add(client.onDidExit(exit => this._handlePiExit(record, exit)));
 		this._sessions.set(AgentSession.id(session), record);
 		return {
 			session,
@@ -155,6 +163,9 @@ export class PiAgent extends Disposable implements IAgent {
 
 	async disposeSession(session: URI): Promise<void> {
 		const record = this._sessions.get(AgentSession.id(session));
+		if (record) {
+			record.disposing = true;
+		}
 		record?.disposables.dispose();
 		record?.client.dispose();
 		this._sessions.delete(AgentSession.id(session));
@@ -211,7 +222,17 @@ export class PiAgent extends Disposable implements IAgent {
 	}
 
 	async shutdown(): Promise<void> {
+		this._disposeSessions();
+	}
+
+	override dispose(): void {
+		this._disposeSessions();
+		super.dispose();
+	}
+
+	private _disposeSessions(): void {
 		for (const record of this._sessions.values()) {
+			record.disposing = true;
 			record.disposables.dispose();
 			record.client.dispose();
 		}
@@ -229,6 +250,22 @@ export class PiAgent extends Disposable implements IAgent {
 		if (activeTurn.state.completed) {
 			record.activeTurn = undefined;
 		}
+	}
+
+	private _handlePiExit(record: IPiSessionRecord, exit: { readonly code: number | null; readonly signal: NodeJS.Signals | null }): void {
+		const activeTurn = record.activeTurn;
+		record.activeTurn = undefined;
+		if (!activeTurn || record.disposing) {
+			return;
+		}
+		this._fireChatAction(activeTurn.chat, {
+			type: ActionType.ChatError,
+			turnId: activeTurn.state.turnId,
+			error: {
+				errorType: 'pi.rpc.exit',
+				message: formatPiExitMessage(exit, record.client.stderr),
+			},
+		});
 	}
 
 	private _fireChatAction(chat: URI, action: ChatAction): void {
@@ -275,4 +312,104 @@ export class PiAgent extends Disposable implements IAgent {
 		}
 		return record;
 	}
+}
+
+function createPiChatError(turnId: string, error: unknown, stderr: string): ChatAction {
+	return {
+		type: ActionType.ChatError,
+		turnId,
+		error: {
+			errorType: classifyPiError(error),
+			message: formatPiRuntimeError(error, stderr),
+		},
+	};
+}
+
+function formatPiSetupError(error: unknown, stderr: string): string {
+	const message = getErrorMessage(error);
+	const detail = appendStderr(message, stderr);
+	if (isMissingExecutableError(error, message)) {
+		return `Pi CLI was not found. Install Pi and make sure the \`pi\` command is on PATH, then try again.${detail ? ` Details: ${detail}` : ''}`;
+	}
+	if (isAuthError(message)) {
+		return `Pi Agent could not start because Pi is not signed in. Sign in to Pi from your terminal, then try again.${detail ? ` Details: ${detail}` : ''}`;
+	}
+	if (isSubscriptionError(message)) {
+		return `Pi Agent could not start because your Pi subscription is not active.${detail ? ` Details: ${detail}` : ''}`;
+	}
+	if (isProviderConfigError(message)) {
+		return `Pi Agent could not start because Pi has no usable provider configured.${detail ? ` Details: ${detail}` : ''}`;
+	}
+	return `Pi Agent failed to start. Make sure Pi is installed, signed in, and configured.${detail ? ` Details: ${detail}` : ''}`;
+}
+
+function formatPiRuntimeError(error: unknown, stderr: string): string {
+	const message = getErrorMessage(error);
+	const detail = appendStderr(message, stderr);
+	if (isAuthError(message)) {
+		return `Sign in to Pi from your terminal, then try again.${detail ? ` Details: ${detail}` : ''}`;
+	}
+	if (isSubscriptionError(message)) {
+		return `Your Pi subscription is not active.${detail ? ` Details: ${detail}` : ''}`;
+	}
+	if (isProviderConfigError(message)) {
+		return `Pi has no usable provider configured.${detail ? ` Details: ${detail}` : ''}`;
+	}
+	return detail || message || 'Pi Agent encountered an error.';
+}
+
+function formatPiExitMessage(exit: { readonly code: number | null; readonly signal: NodeJS.Signals | null }, stderr: string): string {
+	const exitMessage = `Pi RPC process exited${exit.code === null ? '' : ` with code ${exit.code}`}${exit.signal ? ` and signal ${exit.signal}` : ''}.`;
+	return appendStderr(exitMessage, stderr) || exitMessage;
+}
+
+function classifyPiError(error: unknown): string {
+	const message = getErrorMessage(error);
+	if (isAuthError(message)) {
+		return 'pi.auth.required';
+	}
+	if (isSubscriptionError(message)) {
+		return 'pi.subscription.required';
+	}
+	if (isProviderConfigError(message)) {
+		return 'pi.provider.notConfigured';
+	}
+	return 'pi.rpc.error';
+}
+
+function getErrorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+function isMissingExecutableError(error: unknown, message: string): boolean {
+	return getErrorCode(error) === 'ENOENT' || /\bENOENT\b|command not found|not found/i.test(message);
+}
+
+function getErrorCode(error: unknown): string | undefined {
+	if (typeof error !== 'object' || error === null || !Object.hasOwn(error, 'code')) {
+		return undefined;
+	}
+	const code = (error as { readonly code?: unknown }).code;
+	return typeof code === 'string' ? code : undefined;
+}
+
+function isAuthError(message: string): boolean {
+	return /not logged in|sign in|signin|login required|unauthorized|authentication/i.test(message);
+}
+
+function isSubscriptionError(message: string): boolean {
+	return /subscription|billing|payment required|quota|plan required/i.test(message);
+}
+
+function isProviderConfigError(message: string): boolean {
+	return /provider.*config|no provider|api key|model provider|not configured/i.test(message);
+}
+
+function appendStderr(message: string, stderr: string): string {
+	const trimmedMessage = message.trim();
+	const trimmedStderr = stderr.trim();
+	if (!trimmedStderr || trimmedMessage.includes(trimmedStderr)) {
+		return trimmedMessage;
+	}
+	return `${trimmedMessage}${trimmedMessage ? '\n' : ''}${trimmedStderr}`;
 }
