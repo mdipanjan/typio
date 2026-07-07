@@ -587,11 +587,38 @@
 
 /* ---- Chat Input ---- */
 
+/* Match the rounded-pill card look of the sessions app's own new-chat
+ * composer (see src/vs/sessions/contrib/chat/browser/media/newChatInSession.css)
+ * so chatSessions-contributed composers (e.g. local Claude/Copilot CLI
+ * sessions, which render through the classic workbench chat widget) don't
+ * look visually out of place next to it. */
 .agent-sessions-workbench .interactive-session .chat-input-container {
-	border-radius: var(--vscode-cornerRadius-large);
+	border-radius: 20px;
 	border-color: var(--vscode-agentsChatInput-border) !important;
 	background-color: var(--vscode-agentsChatInput-background);
 	color: var(--vscode-agentsChatInput-foreground);
+	box-shadow: 0 26px 70px color-mix(in srgb, var(--vscode-widget-shadow, #000) 12%, transparent), 0 2px 10px color-mix(in srgb, var(--vscode-widget-shadow, #000) 8%, transparent);
+}
+
+/* Attach-context ("+") action: render as the same 28px circular pill
+ * button used by .sessions-chat-attach-button instead of the flat
+ * default action-bar icon. */
+.agent-sessions-workbench .interactive-session .chat-input-toolbars .monaco-action-bar .action-item:has(> .action-label.codicon-add) {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--vscode-foreground) 7%, transparent);
+}
+
+.agent-sessions-workbench .interactive-session .chat-input-toolbars .monaco-action-bar .action-item:has(> .action-label.codicon-add):hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.agent-sessions-workbench .interactive-session .chat-input-toolbars .monaco-action-bar .action-item > .action-label.codicon-add {
+	margin: 0;
 }
 
 .agent-sessions-workbench .interactive-session .chat-input-container.focused {
