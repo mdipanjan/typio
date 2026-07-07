@@ -9,6 +9,14 @@
 
 /* Font Families (with CJK support) */
 
+@font-face {
+	font-family: "Geist";
+	src: url("./fonts/Geist-Variable.woff2") format("woff2");
+	font-weight: 100 900;
+	font-style: normal;
+	font-display: swap;
+}
+
 .monaco-workbench.mac { font-family: "Geist", "Inter", -apple-system, BlinkMacSystemFont, sans-serif; }
 .monaco-workbench.mac:lang(zh-Hans) { font-family: "Geist", "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", sans-serif; }
 .monaco-workbench.mac:lang(zh-Hant) { font-family: "Geist", "Inter", -apple-system, BlinkMacSystemFont, "PingFang TC", sans-serif; }
