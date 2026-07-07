@@ -68,8 +68,11 @@
 }
 
 /* Input toolbar spacing */
+/* margin-top: auto (from chatInput.css) bottom-aligns this row against the
+ * flexed .sessions-chat-editor above it — do not override it back to 0 here. */
 .new-chat-in-session .sessions-chat-toolbar {
-	margin-top: 0;
+	margin-top: auto;
+	flex-shrink: 0;
 	padding: 8px 10px 10px 10px;
 	gap: 8px;
 }
