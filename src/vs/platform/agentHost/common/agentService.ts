@@ -80,6 +80,14 @@ export const AgentHostClaudeAgentEnabledSettingId = 'chat.agentHost.claudeAgent.
 export const AgentHostCodexAgentEnabledSettingId = 'chat.agentHost.codexAgent.enabled';
 
 /**
+ * Configuration key controlling whether the Pi provider is registered in the
+ * agent host process. Pi is Typio's local coding agent integration and uses
+ * the user's existing Pi login/provider configuration. The agent host process
+ * must be restarted for changes to take effect.
+ */
+export const AgentHostPiAgentEnabledSettingId = 'chat.agentHost.piAgent.enabled';
+
+/**
  * Configuration key controlling whether the agent host *wires up* the BYOK
  * ("bring your own key") language-model bridge: the renderer LM handler, the
  * reverse-RPC channel, and the per-connection link to the node-side OpenAI
@@ -117,6 +125,13 @@ export const AgentHostClaudeAgentEnabledEnvVar = 'VSCODE_AGENT_HOST_CLAUDE_AGENT
  * `'false'`; absent means "default" (`false`).
  */
 export const AgentHostCodexAgentEnabledEnvVar = 'VSCODE_AGENT_HOST_CODEX_AGENT_ENABLED';
+
+/**
+ * Environment variable form of {@link AgentHostPiAgentEnabledSettingId}.
+ * Set by the agent host starters from the setting. Accepts `'true'` /
+ * `'false'`; absent means "default" (`true`).
+ */
+export const AgentHostPiAgentEnabledEnvVar = 'VSCODE_AGENT_HOST_PI_AGENT_ENABLED';
 
 /**
  * Environment variable form of {@link AgentHostByokModelsEnabledSettingId}.
@@ -552,6 +567,7 @@ export interface IAgentSdkStarterSettings {
 	readonly codexBinaryArgs?: readonly string[];
 	readonly claudeAgentEnabled?: boolean;
 	readonly codexAgentEnabled?: boolean;
+	readonly piAgentEnabled?: boolean;
 	readonly byokModelsEnabled?: boolean;
 }
 
@@ -576,6 +592,9 @@ export function buildAgentSdkEnv(
 	}
 	if (settings.codexAgentEnabled !== undefined) {
 		setIfMissing(AgentHostCodexAgentEnabledEnvVar, settings.codexAgentEnabled ? 'true' : 'false');
+	}
+	if (settings.piAgentEnabled !== undefined) {
+		setIfMissing(AgentHostPiAgentEnabledEnvVar, settings.piAgentEnabled ? 'true' : 'false');
 	}
 	if (settings.byokModelsEnabled !== undefined) {
 		setIfMissing(AgentHostByokModelsEnabledEnvVar, settings.byokModelsEnabled ? 'true' : 'false');
