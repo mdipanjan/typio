@@ -72,6 +72,26 @@ suite('piEventMapper', () => {
 		assert.deepStrictEqual(endActions[0].result.content, [{ type: 'text', text: '/repo' }]);
 	});
 
+	test('maps aborted errors to cancellation', () => {
+		const state: IPiTurnMapState = { turnId: 'turn-1', prompt: 'hello' };
+
+		assert.deepStrictEqual(mapPiRpcEventToActions(state, {
+			type: 'message_update',
+			assistantMessageEvent: { type: 'error', reason: 'aborted' },
+		}), [{ type: ActionType.ChatTurnCancelled, turnId: 'turn-1' }]);
+	});
+
+	test('maps non-aborted errors to chat error', () => {
+		const state: IPiTurnMapState = { turnId: 'turn-1', prompt: 'hello' };
+		const actions = mapPiRpcEventToActions(state, {
+			type: 'message_update',
+			assistantMessageEvent: { type: 'error', reason: 'error', message: 'not logged in' },
+		});
+
+		assert.strictEqual(actions[0].type, ActionType.ChatError);
+		assert.strictEqual(actions[0].error.message, 'not logged in');
+	});
+
 	test('maps completion once', () => {
 		const state: IPiTurnMapState = { turnId: 'turn-1', prompt: 'hello' };
 
