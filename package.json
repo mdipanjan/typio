@@ -95,6 +95,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.82.0",
+    "@earendil-works/pi-coding-agent": "0.80.3",
     "@github/copilot": "^1.0.69-0",
     "@github/copilot-sdk": "^1.0.6-preview.1",
     "@microsoft/1ds-core-js": "^3.2.13",
