@@ -10,6 +10,75 @@ This is the first major Typio product feature after documentation and branch set
 
 A user can open Typio, choose **Pi Agent**, start a session in the current workspace, send prompts, watch streamed output/tool activity, stop/resume the session, and keep using their existing Pi subscription/login state rather than configuring model API keys in Typio.
 
+## Current Implementation Status
+
+Typio now has a working Pi Agent provider path:
+
+```txt
+Typio workbench / Sessions UI
+  -> AgentHost IAgent provider: PiAgent
+    -> pi --mode rpc subprocess
+      -> Pi auth/provider/session/tool runtime
+```
+
+Completed implementation:
+
+- Pi Agent provider skeleton and registration.
+- Enable flag/env forwarding:
+  - `chat.agentHost.piAgent.enabled`
+  - `VSCODE_AGENT_HOST_PI_AGENT_ENABLED`
+- Pi is no longer gated behind Copilot entitlement/sign-in/custom-model requirements.
+- Pi supports the AgentHost synthetic Auto model path.
+- RPC client for `pi --mode rpc` with JSONL request/response/event handling.
+- Session startup with `get_state` handshake.
+- Prompt send and abort.
+- Prompt while busy queues as `streamingBehavior: 'followUp'` instead of surfacing raw Pi busy errors.
+- Text stream mapping:
+  - `message_update.text_start`
+  - `message_update.text_delta`
+- Thinking/reasoning stream mapping:
+  - `message_update.thinking_start`
+  - `message_update.thinking_delta`
+- Tool lifecycle mapping:
+  - `tool_execution_start`
+  - `tool_execution_update`
+  - `tool_execution_end`
+- Runtime status/event mapping:
+  - `queue_update`
+  - `compaction_start`
+  - `compaction_end`
+  - `auto_retry_start`
+  - `auto_retry_end`
+- Final answer fallback from `agent_end.messages` when Pi did not stream text deltas.
+- Usage mapping from final assistant message usage metadata.
+- Basic `extension_ui_request` handling for input/select/confirm/editor/notify/status/title/widget/editor-text events.
+- Friendly setup/runtime errors for missing Pi CLI, auth/provider/subscription failures, prompt failures, abort, and process exit during active turns.
+- Tests for provider registration, RPC client, event mapper, session startup, errors, tool events, busy queueing, and runtime mappings.
+
+Important limitation: this is still a **runtime bridge**, not yet a full native Pi product surface. Session persistence, transcript hydration, model controls, image attachments, command discovery, and file-change review remain to be built.
+
+## Product Architecture Stance
+
+Typio should be a VS Code-based shell for pluggable agent engines. Pi is the first/default deep integration, but not the only possible future engine.
+
+```txt
+Typio shell / IDE substrate
+  -> AgentHost provider seam
+    -> Pi provider
+    -> Copilot provider
+    -> Claude provider
+    -> Codex provider
+    -> future local/cloud/company agents
+```
+
+Pi-specific code should stay isolated under:
+
+```txt
+src/vs/platform/agentHost/node/pi/
+```
+
+Generic Typio UX should remain provider-agnostic where possible: Agent, Task, Session, Engine, Model, Tools. Pi-specific language belongs in setup/provider-specific surfaces.
+
 ## Non-Goals for the First Slice
 
 - Do not replace the VS Code editor/workbench shell.
@@ -293,14 +362,109 @@ Map to Agent Host `AgentSignal` / `Turn` structures.
 
 First pass should prioritize correctness over richness:
 
-| Pi RPC event | Typio/Agent Host rendering target |
-|--------------|------------------------------------|
-| `message_update.text_delta` | Assistant text response part |
-| `tool_execution_start` | Tool call started/progress item |
-| `tool_execution_update` | Tool output/progress update |
-| `tool_execution_end` | Tool result completed/failed |
-| `turn_end` | Persist completed assistant turn |
-| process error/exit | Session error signal |
+| Pi RPC event | Typio/Agent Host rendering target | Status |
+|--------------|------------------------------------|--------|
+| `message_update.text_start` | Assistant text response part | Done |
+| `message_update.text_delta` | Assistant text delta | Done |
+| `message_update.thinking_start` | Reasoning response part | Done |
+| `message_update.thinking_delta` | Reasoning delta | Done |
+| `tool_execution_start` | Tool call started/ready | Done |
+| `tool_execution_update` | Tool output/progress update | Done |
+| `tool_execution_end` | Tool result completed/failed | Done |
+| `turn_end` | Internal turn boundary only; do not complete Typio request | Done |
+| `agent_end` | Complete Typio turn; fallback final text; usage | Done |
+| `queue_update` | Activity/status for queued messages | Partial |
+| `compaction_start` | Activity/status | Done |
+| `compaction_end` | Activity/status + system notification | Done |
+| `auto_retry_start` | Activity/status | Done |
+| `auto_retry_end` | Clear activity/status | Done |
+| `extension_ui_request` | Basic input/select/confirm/notify/status mapping | Partial |
+| process error/exit | Session error signal | Done |
+
+## Remaining Pi Capability Coverage
+
+### Highest Priority
+
+1. **Session persistence and resume**
+   - Persist Typio session URI ↔ Pi `sessionId` / `sessionFile` / `sessionName`.
+   - Use Pi `switch_session`, `fork`, `clone`, `new_session`, and/or CLI session options after verifying exact support.
+   - Reopen a prior Pi session after Typio reload.
+
+2. **Transcript hydration**
+   - Implement `getSessionMessages()` and chat `getMessages()` using Pi `get_messages` or AgentHost persisted state.
+   - Render historical user, assistant, reasoning, tool, and system messages.
+
+3. **Native file-change surface**
+   - Detect Pi-created file edits and map them into VS Code-native change review/apply/revert surfaces.
+   - Avoid relying only on tool output text.
+
+4. **Model and thinking controls**
+   - `get_available_models`
+   - `set_model`
+   - `cycle_model`
+   - `set_thinking_level`
+   - `cycle_thinking_level`
+   - Surface current Pi provider/model/thinking level in Typio.
+
+5. **Image/context attachments**
+   - Translate Typio image attachments into Pi `prompt.images` / content blocks.
+   - Preserve workspace/file/context attachments in prompts.
+
+6. **Slash commands, skills, and templates**
+   - Use Pi command discovery (`get_commands`) to power input autocomplete or a command picker.
+   - Make Pi skills/templates discoverable without requiring users to know Pi CLI syntax.
+
+### Medium Priority
+
+7. **Steering vs follow-up UX**
+   - Current busy prompt behavior uses `streamingBehavior: 'followUp'`.
+   - Add explicit “steer current run” affordance using `steer` / `streamingBehavior: 'steer'`.
+   - Consider exposing `set_steering_mode` and `set_follow_up_mode`.
+
+8. **Compaction controls**
+   - `compact`
+   - `set_auto_compaction`
+   - Show context usage/token pressure and let user manually compact.
+
+9. **Auto-retry controls**
+   - `set_auto_retry`
+   - `abort_retry`
+   - We show retry status now; users cannot control it yet.
+
+10. **Session stats and cost/context meter**
+    - `get_session_stats`
+    - Show current context usage, token usage, and cost where available.
+
+11. **Session tree / fork visualization**
+    - `get_entries`
+    - `get_tree`
+    - Show Pi's branch/fork structure in a Typio-native session/tree UI.
+
+12. **Session title sync**
+    - Map Pi `session_info_changed` or equivalent state updates to Typio session labels.
+    - Use `set_session_name` where appropriate.
+
+### Lower Priority / Later
+
+13. **Direct Pi bash command controls**
+    - `bash`
+    - `abort_bash`
+    - Useful for explicit user-driven terminal actions, separate from LLM tool calls.
+
+14. **HTML export**
+    - `export_html`
+
+15. **Full native extension UI**
+    - Current `extension_ui_request` handling is basic.
+    - Build tasteful native surfaces for `setWidget`, `setStatus`, `editor`, and `set_editor_text` instead of representing most as notifications.
+
+16. **Advanced Pi launch configuration**
+    - `--provider`
+    - `--model`
+    - `--name`
+    - `--session-dir`
+    - `--no-session`
+    - explicit executable path and extra args.
 
 ## Session Persistence Strategy
 
@@ -462,32 +626,26 @@ Manual checklist:
 
 ## Staged Implementation
 
-### Stage 0 — Planning and Scaffolding
+### Stage 0 — Planning and Scaffolding — Done
 
 - Document this plan.
 - Confirm branch target and PR flow.
-- Verify Pi RPC resume/session commands from Pi docs/source.
-- Decide setting namespace.
+- Verify Pi RPC docs/types enough for first integration.
+- Decide initial setting namespace: `chat.agentHost.piAgent.enabled`.
 
-Exit criteria:
+Exit criteria: met.
 
-- Plan reviewed.
-- Implementation branch is based on `develop` or rebased after docs PR lands.
+### Stage 1 — Provider Discovery Skeleton — Done
 
-### Stage 1 — Provider Discovery Skeleton
-
-- Add `PiAgent` class implementing `IAgent` with conservative no-op behavior.
-- Register it in `agentHostMain.ts` behind an enable flag.
+- Add `PiAgent` class implementing `IAgent` with conservative behavior.
+- Register it in AgentHost main/server entry points behind enable flag/env forwarding.
 - Expose descriptor: `Pi Agent`.
 - Confirm it appears in session type picker.
+- Remove Copilot entitlement/sign-in/custom-model gating for Pi.
 
-Exit criteria:
+Exit criteria: met.
 
-- No prompt sending yet.
-- Typecheck passes.
-- Pi Agent appears only when enabled.
-
-### Stage 2 — RPC Client and Session Creation
+### Stage 2 — RPC Client and Session Creation — Done
 
 - Implement `PiRpcClient` subprocess wrapper.
 - Locate/spawn `pi --mode rpc`.
@@ -495,44 +653,59 @@ Exit criteria:
 - Create Agent Host session metadata.
 - Implement clear install/auth/startup errors.
 
-Exit criteria:
+Exit criteria: met for live sessions. Persistent session metadata remains Stage 4.
 
-- Creating a Pi session starts Pi RPC and creates a session item.
-- Failure states are understandable.
-
-### Stage 3 — Send, Stream, Abort
+### Stage 3 — Send, Stream, Abort — Mostly Done
 
 - Implement prompt send.
 - Map text deltas into assistant response.
-- Map basic tool start/update/end into progress parts.
+- Map thinking deltas into reasoning response.
+- Map tool start/update/end into tool call parts.
 - Implement abort.
-- Persist final turn history.
+- Queue busy prompts as follow-ups.
+- Complete only on `agent_end`, not `turn_end`.
+- Fallback to final assistant text from `agent_end.messages`.
+- Map usage metadata.
+- Map basic compaction/retry/queue/activity events.
 
-Exit criteria:
+Exit criteria: met for basic conversation, streaming, tools, abort, and reliability. Persistent final turn history remains Stage 4.
 
-- User can hold a basic working conversation with Pi in Typio.
-- Streaming works.
-- Abort works.
-
-### Stage 4 — Persistence and Resume
+### Stage 4 — Persistence and Resume — Next
 
 - Persist session mapping.
 - List prior Typio-created Pi sessions.
 - Rehydrate messages from Pi/Typio state.
 - Resume existing Pi session if supported.
+- Sync Pi session title/name.
 
 Exit criteria:
 
 - Reload Typio and reopen a Pi session.
 - Continue conversation without losing visible history.
 
-### Stage 5 — UX Polish
+### Stage 5 — Native Pi Capability Surface — Next
+
+- Model picker from Pi `get_available_models`.
+- Thinking level controls.
+- Manual/auto compaction controls.
+- Steering vs follow-up control.
+- Session stats/context usage/cost meter.
+- Image/context attachment translation.
+- Slash command/skill/template discovery.
+- Native file-change review/apply/revert.
+
+Exit criteria:
+
+- Pi feels like a native Typio engine, not a subprocess text bridge.
+
+### Stage 6 — UX Polish
 
 - Add final display labels/icons.
 - Improve status and empty states.
 - Add “Open Pi logs” or “Export Pi debug info”.
-- Add setting for executable path.
+- Add setting for executable path and extra args.
 - Decide whether Pi becomes the Typio default agent.
+- Keep provider-agnostic UI language so future agents can plug into the same shell.
 
 Exit criteria:
 
@@ -540,14 +713,16 @@ Exit criteria:
 
 ## Open Questions
 
-1. Which exact Pi CLI/RPC command resumes an existing session file?
-2. Can Pi RPC expose current provider/model/login state clearly enough for Typio status text?
-3. Does Pi RPC expose structured diffs/file edits, or do we infer from tool output/file changes?
-4. Should Typio use `typio.piAgent.*` settings or inherited `chat.agentHost.piAgent.*` settings?
-5. Should Pi be enabled by default in dev builds only, or in all Typio builds?
-6. Should quick chat be supported in the first implementation?
-7. Should Pi sessions be isolated in worktrees, or initially run directly in the selected workspace?
-8. How much of Pi's TUI-only UX should be represented in Typio versus intentionally omitted?
+1. Which exact Pi CLI/RPC command should Typio use to resume an existing session file in a fresh RPC process?
+2. Should Typio persist AgentHost state, Pi session state, or both as the transcript source of truth?
+3. Can Pi RPC expose current provider/model/login state clearly enough for Typio setup/status text?
+4. Does Pi RPC expose structured diffs/file edits, or should Typio watch workspace changes and infer change sets?
+5. Should Typio use `typio.piAgent.*` settings for product-owned configuration, while keeping `chat.agentHost.piAgent.enabled` for the inherited provider toggle?
+6. Should Pi be enabled by default in dev builds only, or in all Typio builds?
+7. Should quick chat be supported in the first implementation?
+8. Should Pi sessions be isolated in worktrees, or initially run directly in the selected workspace?
+9. How much of Pi's TUI-only UX should be represented in Typio versus intentionally omitted?
+10. What provider-agnostic capability contract is needed so future non-Pi agents can reuse the same Typio UI surfaces?
 
 ## Risks
 
