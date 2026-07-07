@@ -45,6 +45,7 @@ import { ClaudeAgentSdkService, ClaudeSdkPackage, IClaudeAgentSdkService } from 
 import { ClaudeProxyService, IClaudeProxyService } from './claude/claudeProxyService.js';
 import { CodexAgent, CodexSdkPackage } from './codex/codexAgent.js';
 import { PiAgent } from './pi/piAgent.js';
+import { PiSessionStore } from './pi/piSessionStore.js';
 import { CodexProxyService, ICodexProxyService } from './codex/codexProxyService.js';
 import { AgentSdkDownloader, IAgentSdkDownloader, type IAgentSdkDownloadProgress } from './agentSdkDownloader.js';
 import { IAgentHostOTelService } from '../common/otel/agentHostOTelService.js';
@@ -300,7 +301,7 @@ async function main(): Promise<void> {
 		agentService.registerProvider(copilotAgent);
 		log('CopilotAgent registered');
 		if (isAgentEnabled(process.env[AgentHostPiAgentEnabledEnvVar], true)) {
-			const piAgent = disposables.add(instantiationService.createInstance(PiAgent));
+			const piAgent = disposables.add(instantiationService.createInstance(PiAgent, undefined, instantiationService.createInstance(PiSessionStore)));
 			agentService.registerProvider(piAgent);
 			log('PiAgent registered');
 		}

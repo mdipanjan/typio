@@ -5,6 +5,7 @@
 
 import * as assert from 'assert';
 import { EventEmitter } from 'events';
+import type { IDisposable } from '../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { PiJsonlStreamParser, PiRpcClient, type PiRpcMessage, type PiRpcObject } from '../../node/pi/piRpcClient.js';
 
@@ -115,9 +116,9 @@ suite('PiRpcClient', () => {
 	test('emits package rpc events', async () => {
 		const packageClient = new FakePiPackageRpcClient();
 		const client = new PiRpcClient(packageClient);
+		let disposable: IDisposable | undefined;
 		try {
 			await client.request('get_state');
-			let disposable: { dispose(): void } | undefined;
 			const eventPromise = new Promise(resolve => disposable = client.onDidEvent(resolve));
 
 			packageClient.fire({ type: 'agent_start' });
@@ -126,6 +127,7 @@ suite('PiRpcClient', () => {
 
 			assert.deepStrictEqual(event, { type: 'agent_start' });
 		} finally {
+			disposable?.dispose();
 			client.dispose();
 		}
 	});
