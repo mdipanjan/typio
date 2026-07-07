@@ -20,6 +20,7 @@ class FakePiSessionClient {
 	readonly onDidExit = this._onDidExit.event;
 	readonly stderr = '';
 	readonly requests: { readonly type: string; readonly payload?: PiRpcObject }[] = [];
+	readonly responses = new Map<string, PiRpcMessage>();
 	disposed = false;
 	requestError: Error | undefined;
 
@@ -28,7 +29,7 @@ class FakePiSessionClient {
 		if (this.requestError) {
 			throw this.requestError;
 		}
-		return { type: 'response', success: true };
+		return this.responses.get(type) ?? { type: 'response', success: true };
 	}
 
 	fireEvent(event: PiRpcMessage): void {
@@ -81,6 +82,55 @@ suite('PiAgent', () => {
 			assert.deepStrictEqual(sessions[0].session, result.session);
 			assert.deepStrictEqual(sessions[0].workingDirectory, workingDirectory);
 			assert.strictEqual(sessions[0].summary, 'Pi Agent · typio-pi-project');
+		} finally {
+			agent.dispose();
+		}
+	});
+
+	test('uses Pi session state in metadata when available', async () => {
+		const client = new FakePiSessionClient();
+		client.responses.set('get_state', { type: 'response', success: true, data: { sessionId: 'pi-123', sessionFile: '/tmp/pi-session.jsonl', sessionName: 'Implement feature' } });
+		const agent = new PiAgent(() => client);
+		try {
+			const result = await agent.createSession({ workingDirectory: URI.file('/tmp/project') });
+
+			assert.strictEqual(AgentSession.id(result.session), 'pi-123');
+			const metadata = await agent.getSessionMetadata(result.session);
+			assert.strictEqual(metadata?.summary, 'Implement feature');
+			assert.deepStrictEqual(metadata?._meta?.pi, { sessionId: 'pi-123', sessionFile: '/tmp/pi-session.jsonl', sessionName: 'Implement feature' });
+		} finally {
+			agent.dispose();
+		}
+	});
+
+	test('hydrates turns from Pi get_messages', async () => {
+		const client = new FakePiSessionClient();
+		client.responses.set('get_messages', {
+			type: 'response',
+			success: true,
+			data: {
+				messages: [
+					{ role: 'user', content: 'hello' },
+					{ role: 'assistant', content: [{ type: 'thinking', thinking: 'Need answer.' }, { type: 'text', text: 'Hi there' }], model: 'test-model', usage: { input: 1, output: 2, cacheRead: 3 } },
+					{ role: 'toolResult', content: [{ type: 'text', text: 'tool output' }] },
+				],
+			},
+		});
+		const agent = new PiAgent(() => client);
+		try {
+			const { session } = await agent.createSession({ workingDirectory: URI.file('/tmp/project') });
+			const chat = URI.parse(buildDefaultChatUri(session));
+
+			const turns = await agent.chats.getMessages(chat);
+
+			assert.strictEqual(turns.length, 1);
+			assert.strictEqual(turns[0].message.text, 'hello');
+			assert.deepStrictEqual(turns[0].responseParts.map(part => part.kind), ['reasoning', 'markdown', 'systemNotification']);
+			assert.strictEqual(turns[0].usage?.model, 'test-model');
+			assert.strictEqual(turns[0].usage?.inputTokens, 1);
+			assert.strictEqual(turns[0].usage?.outputTokens, 2);
+			assert.strictEqual(turns[0].usage?.cacheReadTokens, 3);
+			assert.deepStrictEqual(client.requests.map(request => request.type), ['get_state', 'get_messages']);
 		} finally {
 			agent.dispose();
 		}

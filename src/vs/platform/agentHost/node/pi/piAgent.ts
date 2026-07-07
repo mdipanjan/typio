@@ -12,7 +12,7 @@ import { AgentSession, type AgentProvider, type AgentSignal, type IActiveClient,
 import { ActionType, type ChatAction } from '../../common/state/sessionActions.js';
 import type { ResolveSessionConfigResult, SessionConfigCompletionsResult } from '../../common/state/protocol/commands.js';
 import type { AgentSelection, MessageAttachment, ModelSelection, ProtectedResourceMetadata, ToolDefinition } from '../../common/state/protocol/state.js';
-import { ChatInputAnswerState, ChatInputAnswerValueKind, ChatInputQuestionKind, MessageKind, parseChatUri, PendingMessageKind, ResponsePartKind, type ChatInputAnswer, type ChatInputRequest, ChatInputResponseKind, type ClientPluginCustomization, type ToolCallResult, type Turn } from '../../common/state/sessionState.js';
+import { ChatInputAnswerState, ChatInputAnswerValueKind, ChatInputQuestionKind, MessageKind, parseChatUri, PendingMessageKind, ResponsePartKind, TurnState, type ChatInputAnswer, type ChatInputRequest, ChatInputResponseKind, type ClientPluginCustomization, type ResponsePart, type ToolCallResult, type Turn } from '../../common/state/sessionState.js';
 import { PiRpcClient, type PiRpcMessage, type PiRpcObject } from './piRpcClient.js';
 import { mapPiRpcEventToActions, startPiTurn, type IPiTurnMapState } from './piEventMapper.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -31,7 +31,10 @@ interface IPiSessionRecord {
 	readonly startTime: number;
 	modifiedTime: number;
 	readonly workingDirectory: URI | undefined;
-	readonly summary: string;
+	summary: string;
+	piSessionId?: string;
+	piSessionFile?: string;
+	piSessionName?: string;
 	readonly client: IPiSessionClient;
 	readonly disposables: DisposableStore;
 	readonly queuedTurns: IPiQueuedTurn[];
@@ -137,8 +140,7 @@ export class PiAgent extends Disposable implements IAgent {
 			this._assertKnownChat(chat);
 		},
 		getMessages: async (chat: URI): Promise<readonly Turn[]> => {
-			this._assertKnownChat(chat);
-			return [];
+			return this.getSessionMessages(this._getSessionForChat(chat));
 		},
 	};
 
@@ -151,24 +153,29 @@ export class PiAgent extends Disposable implements IAgent {
 	}
 
 	async createSession(config?: IAgentCreateSessionConfig): Promise<IAgentCreateSessionResult> {
-		const session = config?.session ?? AgentSession.uri(this.id, `pi-session-${this._nextSessionId++}`);
 		const now = Date.now();
 		const workingDirectory = config?.workingDirectory;
 		const summary = workingDirectory ? `Pi Agent · ${basename(workingDirectory.fsPath) || workingDirectory.fsPath}` : 'Pi Agent Quick Chat';
 		const client = this._createClient({ cwd: workingDirectory?.fsPath });
+		let state: PiRpcMessage;
 		try {
-			await client.request('get_state');
+			state = await client.request('get_state');
 		} catch (error) {
 			client.dispose();
 			throw new Error(formatPiSetupError(error, client.stderr));
 		}
+		const stateData = getPiResponseData(state);
+		const piSessionId = typeof stateData?.sessionId === 'string' ? stateData.sessionId : undefined;
+		const piSessionFile = typeof stateData?.sessionFile === 'string' ? stateData.sessionFile : undefined;
+		const piSessionName = typeof stateData?.sessionName === 'string' ? stateData.sessionName : undefined;
+		const actualSession = config?.session ?? AgentSession.uri(this.id, piSessionId ? sanitizePiSessionId(piSessionId) : `pi-session-${this._nextSessionId++}`);
 		const disposables = new DisposableStore();
-		const record: IPiSessionRecord = { session, startTime: now, modifiedTime: now, workingDirectory, summary, client, disposables, queuedTurns: [] };
+		const record: IPiSessionRecord = { session: actualSession, startTime: now, modifiedTime: now, workingDirectory, summary: piSessionName || summary, piSessionId, piSessionFile, piSessionName, client, disposables, queuedTurns: [] };
 		disposables.add(client.onDidEvent(event => this._handlePiEvent(record, event)));
 		disposables.add(client.onDidExit(exit => this._handlePiExit(record, exit)));
-		this._sessions.set(AgentSession.id(session), record);
+		this._sessions.set(AgentSession.id(actualSession), record);
 		return {
-			session,
+			session: actualSession,
 			workingDirectory,
 			project: workingDirectory ? { uri: workingDirectory, displayName: basename(workingDirectory.fsPath) || workingDirectory.fsPath } : undefined,
 		};
@@ -183,8 +190,9 @@ export class PiAgent extends Disposable implements IAgent {
 	}
 
 	async getSessionMessages(session: URI): Promise<readonly Turn[]> {
-		this._assertKnownSession(session);
-		return [];
+		const record = this._getRecord(session);
+		const response = await record.client.request('get_messages');
+		return piMessagesToTurns(getPiMessages(response));
 	}
 
 	async disposeSession(session: URI): Promise<void> {
@@ -350,7 +358,14 @@ export class PiAgent extends Disposable implements IAgent {
 			modifiedTime: record.modifiedTime,
 			workingDirectory: record.workingDirectory,
 			project: record.workingDirectory ? { uri: record.workingDirectory, displayName: basename(record.workingDirectory.fsPath) || record.workingDirectory.fsPath } : undefined,
-			summary: record.summary,
+			summary: record.piSessionName || record.summary,
+			_meta: {
+				pi: {
+					sessionId: record.piSessionId,
+					sessionFile: record.piSessionFile,
+					sessionName: record.piSessionName,
+				},
+			},
 		};
 	}
 
@@ -575,4 +590,139 @@ function appendStderr(message: string, stderr: string): string {
 		return trimmedMessage;
 	}
 	return `${trimmedMessage}${trimmedMessage ? '\n' : ''}${trimmedStderr}`;
+}
+
+function getPiResponseData(message: PiRpcMessage): Record<string, unknown> | undefined {
+	return typeof message.data === 'object' && message.data !== null && !Array.isArray(message.data)
+		? message.data as Record<string, unknown>
+		: undefined;
+}
+
+function getPiMessages(message: PiRpcMessage): readonly unknown[] {
+	const data = getPiResponseData(message);
+	return Array.isArray(data?.messages) ? data.messages : [];
+}
+
+function sanitizePiSessionId(sessionId: string): string {
+	return sessionId.replace(/[^A-Za-z0-9._-]/g, '-');
+}
+
+function piMessagesToTurns(messages: readonly unknown[]): readonly Turn[] {
+	const turns: Turn[] = [];
+	let current: Turn | undefined;
+	for (const raw of messages) {
+		const message = getPiMessageObject(raw);
+		if (!message) {
+			continue;
+		}
+		if (message.role === 'user') {
+			if (current) {
+				turns.push(current);
+			}
+			current = {
+				id: generateUuid(),
+				message: { text: piMessageText(message.content), origin: { kind: MessageKind.User } },
+				responseParts: [],
+				usage: undefined,
+				state: TurnState.Complete,
+			};
+			continue;
+		}
+		if (!current) {
+			current = {
+				id: generateUuid(),
+				message: { text: '', origin: { kind: MessageKind.Agent } },
+				responseParts: [],
+				usage: undefined,
+				state: TurnState.Complete,
+			};
+		}
+		if (message.role === 'assistant') {
+			current.responseParts.push(...piAssistantResponseParts(message.content));
+			current.usage = piUsage(message);
+			if (message.stopReason === 'aborted') {
+				current.state = TurnState.Cancelled;
+			} else if (message.stopReason === 'error') {
+				current.state = TurnState.Error;
+				current.error = { errorType: 'pi.stopReason.error', message: 'Pi assistant response ended with an error.' };
+			}
+			continue;
+		}
+		if (message.role === 'toolResult' || message.role === 'bashExecution') {
+			const text = piMessageText(message.content) || piToolExecutionText(message);
+			if (text) {
+				current.responseParts.push({ kind: ResponsePartKind.SystemNotification, content: text });
+			}
+		}
+	}
+	if (current) {
+		turns.push(current);
+	}
+	return turns;
+}
+
+function getPiMessageObject(value: unknown): Record<string, unknown> | undefined {
+	return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function piAssistantResponseParts(content: unknown): ResponsePart[] {
+	if (typeof content === 'string') {
+		return content ? [{ kind: ResponsePartKind.Markdown, id: generateUuid(), content }] : [];
+	}
+	if (!Array.isArray(content)) {
+		return [];
+	}
+	const parts: ResponsePart[] = [];
+	for (const raw of content) {
+		const item = getPiMessageObject(raw);
+		if (!item) {
+			continue;
+		}
+		if (item.type === 'text' && typeof item.text === 'string' && item.text.length > 0) {
+			parts.push({ kind: ResponsePartKind.Markdown, id: generateUuid(), content: item.text });
+		} else if (item.type === 'thinking' && typeof item.thinking === 'string' && item.thinking.length > 0) {
+			parts.push({ kind: ResponsePartKind.Reasoning, id: generateUuid(), content: item.thinking });
+		} else if (item.type === 'toolCall') {
+			const name = typeof item.name === 'string' ? item.name : 'tool';
+			parts.push({ kind: ResponsePartKind.SystemNotification, content: `Called ${name}` });
+		}
+	}
+	return parts;
+}
+
+function piMessageText(content: unknown): string {
+	if (typeof content === 'string') {
+		return content;
+	}
+	if (!Array.isArray(content)) {
+		return '';
+	}
+	return content
+		.map(item => getPiMessageObject(item))
+		.filter(item => item?.type === 'text' && typeof item.text === 'string')
+		.map(item => item!.text as string)
+		.join('');
+}
+
+function piToolExecutionText(message: Record<string, unknown>): string {
+	const command = typeof message.command === 'string' ? message.command : undefined;
+	const output = typeof message.output === 'string' ? message.output : undefined;
+	if (command && output) {
+		return `$ ${command}\n${output}`;
+	}
+	return output ?? '';
+}
+
+function piUsage(message: Record<string, unknown>): Turn['usage'] {
+	const usage = getPiMessageObject(message.usage);
+	if (!usage) {
+		return undefined;
+	}
+	return {
+		inputTokens: typeof usage.input === 'number' ? usage.input : undefined,
+		outputTokens: typeof usage.output === 'number' ? usage.output : undefined,
+		cacheReadTokens: typeof usage.cacheRead === 'number' ? usage.cacheRead : undefined,
+		model: typeof message.model === 'string' ? message.model : undefined,
+		_meta: { provider: message.provider, cost: usage.cost },
+	};
 }
