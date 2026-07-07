@@ -124,6 +124,8 @@
 	background-color: transparent;
 	box-shadow: none;
 	transition: border-color 120ms ease, background-color 120ms ease;
+	display: flex;
+	flex-direction: column;
 }
 
 .monaco-workbench .agentSessionsWelcome-chatWidget .interactive-session .chat-input-container.focused {
@@ -132,6 +134,7 @@
 
 .agentSessionsWelcome-chatWidget .chat-editor-container {
 	padding: 0;
+	flex: 1;
 }
 
 .agentSessionsWelcome-chatWidget .interactive-input-part .chat-editor-container .interactive-input-editor .monaco-editor,
@@ -147,7 +150,8 @@
 .agentSessionsWelcome-chatWidget .chat-input-toolbars {
 	align-items: center;
 	gap: 8px;
-	margin-top: 10px;
+	margin-top: auto;
+	padding-top: 10px;
 }
 
 .agentSessionsWelcome-chatWidget .chat-input-toolbars > .chat-input-toolbar,
