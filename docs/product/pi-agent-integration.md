@@ -735,28 +735,247 @@ Exit criteria:
 | Subprocess lifecycle bugs | Build a fake Pi test harness before real Pi integration gets complex. |
 | Upstream VS Code churn | Keep Pi code isolated under `node/pi/` with one registration touchpoint. |
 
-## Recommended First PR Breakdown
+## Recommended PR Stack
 
-1. **Plan PR**
-   - Add this document.
-   - No runtime code.
+Pi integration should be reviewed as a stack of small, understandable PRs. Each PR should answer one review question and keep Pi-specific code isolated where possible.
 
-2. **Skeleton PR**
-   - Add `PiAgent` descriptor and enable setting.
-   - Prove picker integration.
+### PR 1 — Product plan and architecture
 
-3. **RPC Client PR**
-   - Add subprocess client and fake-Pi tests.
-   - No full UI send yet.
+Scope:
 
-4. **Conversation PR**
-   - Prompt/send/stream/abort.
+- Add/update Pi integration plan.
+- Explain why Pi is an AgentHost provider.
+- Document the product stance: Typio is a VS Code-based shell for pluggable agent engines; Pi is the first/default deep engine.
 
-5. **Persistence PR**
-   - List/reopen/resume sessions.
+Likely files:
 
-6. **Polish PR**
-   - Error states, settings, logs, defaults.
+```txt
+docs/product/pi-agent-integration.md
+docs/product/README.md
+```
+
+Review question:
+
+> Does the architecture make sense before runtime code lands?
+
+### PR 2 — Pi provider skeleton
+
+Scope:
+
+- Add `PiAgent` class implementing the AgentHost `IAgent` surface with conservative behavior.
+- Register Pi in AgentHost main/server entry points.
+- Add enable flag/env forwarding.
+- Prove Pi can appear as an agent provider.
+
+Likely files:
+
+```txt
+src/vs/platform/agentHost/node/pi/piAgent.ts
+src/vs/platform/agentHost/node/agentHostMain.ts
+src/vs/platform/agentHost/node/agentHostServerMain.ts
+src/vs/platform/agentHost/common/agentHostStarter.config.contribution.ts
+src/vs/platform/agentHost/electron-main/electronAgentHostStarter.ts
+src/vs/platform/agentHost/node/nodeAgentHostStarter.ts
+src/vs/platform/agentHost/test/common/agentService.test.ts
+src/vs/platform/agentHost/test/node/piAgent.test.ts
+```
+
+Review question:
+
+> Does Typio add Pi as a first-class provider without disturbing existing providers?
+
+### PR 3 — Pi RPC client
+
+Scope:
+
+- Add subprocess boundary for `pi --mode rpc`.
+- Implement LF-delimited JSONL request/response/event handling.
+- Correlate responses by id.
+- Capture stderr and process exit.
+- Test protocol edge cases.
+
+Likely files:
+
+```txt
+src/vs/platform/agentHost/node/pi/piRpcClient.ts
+src/vs/platform/agentHost/test/node/piRpcClient.test.ts
+```
+
+Review question:
+
+> Is the Pi RPC/process boundary robust and well tested?
+
+### PR 4 — Start Pi sessions, send prompts, abort
+
+Scope:
+
+- Spawn Pi RPC for new sessions.
+- Perform `get_state` handshake.
+- Send `prompt`.
+- Send `abort`.
+- Dispose sessions/clients correctly.
+- Surface missing CLI/auth/provider/startup failures as friendly errors.
+
+Likely files:
+
+```txt
+src/vs/platform/agentHost/node/pi/piAgent.ts
+src/vs/platform/agentHost/test/node/piAgent.test.ts
+```
+
+Review question:
+
+> Can Typio safely create and control a live Pi runtime?
+
+### PR 5 — Stream text, tools, and errors
+
+Scope:
+
+- Map Pi text deltas into AgentHost chat response parts.
+- Map tool execution lifecycle.
+- Map stream errors and process exits.
+- Treat Pi `agent_end` as completion and avoid completing on `turn_end`.
+
+Likely files:
+
+```txt
+src/vs/platform/agentHost/node/pi/piEventMapper.ts
+src/vs/platform/agentHost/test/node/piEventMapper.test.ts
+src/vs/platform/agentHost/node/pi/piAgent.ts
+src/vs/platform/agentHost/test/node/piAgent.test.ts
+```
+
+Review question:
+
+> Does Pi's basic runtime output render correctly in Typio chat/tool UI?
+
+### PR 6 — Remove Copilot gating for Pi
+
+Scope:
+
+- Ensure Pi does not require Copilot sign-in.
+- Ensure Pi does not require Copilot/custom-model entitlement.
+- Allow Pi to use the synthetic Auto model path.
+
+Likely files:
+
+```txt
+src/vs/workbench/contrib/chat/browser/agentSessions/agentHost/agentHostChatContribution.ts
+src/vs/workbench/contrib/chat/browser/agentSessions/agentHost/agentHostLanguageModelProvider.ts
+src/vs/workbench/contrib/chat/test/browser/agentSessions/agentHostLanguageModelProvider.test.ts
+```
+
+Review question:
+
+> Can Pi be used independently of Copilot entitlements and GitHub auth?
+
+### PR 7 — Runtime hardening and busy prompt queueing
+
+Scope:
+
+- Harden prompt failures and active-turn process exits.
+- Queue prompts while Pi is busy with `streamingBehavior: 'followUp'`.
+- Show pending queued messages and remove them when Pi starts the queued turn.
+- Improve abort/cancel behavior.
+
+Likely files:
+
+```txt
+src/vs/platform/agentHost/node/pi/piAgent.ts
+src/vs/platform/agentHost/node/pi/piEventMapper.ts
+src/vs/platform/agentHost/test/node/piAgent.test.ts
+src/vs/platform/agentHost/test/node/piEventMapper.test.ts
+```
+
+Review question:
+
+> Does Pi behave reliably under real interactive use?
+
+### PR 8 — Richer Pi runtime events
+
+Scope:
+
+- Map thinking/reasoning stream events.
+- Map queue/compaction/retry activity.
+- Fallback to final assistant text from `agent_end.messages` when no text delta streamed.
+- Map usage metadata.
+- Add basic `extension_ui_request` handling.
+
+Likely files:
+
+```txt
+src/vs/platform/agentHost/node/pi/piAgent.ts
+src/vs/platform/agentHost/node/pi/piEventMapper.ts
+src/vs/platform/agentHost/test/node/piAgent.test.ts
+src/vs/platform/agentHost/test/node/piEventMapper.test.ts
+```
+
+Review question:
+
+> Does Typio consume enough Pi runtime events to avoid abrupt or stuck-feeling sessions?
+
+### PR 9 — Session persistence and transcript hydration
+
+Scope:
+
+- Persist Typio session URI ↔ Pi session metadata.
+- Implement `listSessions()` for prior Typio-created Pi sessions.
+- Implement `getSessionMessages()` / chat `getMessages()` with Pi `get_messages` or persisted AgentHost state.
+- Resume existing Pi sessions if supported.
+- Sync session titles.
+
+Likely files:
+
+```txt
+src/vs/platform/agentHost/node/pi/piSessionStore.ts
+src/vs/platform/agentHost/node/pi/piAgent.ts
+src/vs/platform/agentHost/test/node/piAgent.test.ts
+```
+
+Review question:
+
+> Can a user reload Typio and continue a Pi session without losing visible history?
+
+### PR 10 — Native Pi controls
+
+Scope:
+
+- Model picker from `get_available_models`.
+- `set_model` / `cycle_model`.
+- Thinking level controls.
+- Manual/auto compaction controls.
+- Steering vs follow-up control.
+- Session stats/context usage/cost meter.
+
+Review question:
+
+> Can users control Pi's important runtime capabilities from Typio instead of the Pi TUI?
+
+### PR 11 — Attachments, commands, and native code-change UX
+
+Scope:
+
+- Translate Typio image/context attachments to Pi prompt payloads.
+- Discover Pi slash commands/skills/templates and expose them in input UI.
+- Map Pi-created file edits into native VS Code diff/review/apply/revert flows.
+
+Review question:
+
+> Does Pi feel like a native IDE engine rather than a chat subprocess?
+
+### PR 12 — UI polish and provider-agnostic shell refinement
+
+Scope:
+
+- Improve setup/empty/error states.
+- Add logs/debug export affordances.
+- Add executable path/session-dir/extra-args settings.
+- Make Pi the default Typio agent if desired.
+- Keep shared UI language generic enough for future agents.
+
+Review question:
+
+> Is Typio ready for normal users while preserving a pluggable agent architecture?
 
 ## Definition of Done for First Major Feature
 
