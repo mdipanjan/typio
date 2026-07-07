@@ -244,7 +244,7 @@ function createCopilotSetupStep(id: string, button: string, when: string, includ
 		description,
 		when: `${when} && !chatSetupHidden && !chatSetupDisabledInWorkspace`,
 		media: {
-			type: 'svg', altText: 'VS Code Copilot multi file edits', path: 'multi-file-edits.svg'
+			type: 'svg', altText: 'Typio agent edits', path: 'multi-file-edits.svg'
 		},
 	};
 }
@@ -252,12 +252,12 @@ function createCopilotSetupStep(id: string, button: string, when: string, includ
 export const walkthroughs: GettingStartedWalkthroughContent = [
 	{
 		id: 'Setup',
-		title: localize('gettingStarted.setup.title', "Get started with VS Code"),
+		title: localize('gettingStarted.setup.title', "Get started with Typio"),
 		description: localize('gettingStarted.setup.description', "Customize your editor, learn the basics, and start coding"),
 		isFeatured: true,
 		icon: setupIcon,
 		when: '!isWeb',
-		walkthroughPageTitle: localize('gettingStarted.setup.walkthroughPageTitle', 'Setup VS Code'),
+		walkthroughPageTitle: localize('gettingStarted.setup.walkthroughPageTitle', 'Setup Typio'),
 		next: 'Beginner',
 		content: {
 			type: 'steps',

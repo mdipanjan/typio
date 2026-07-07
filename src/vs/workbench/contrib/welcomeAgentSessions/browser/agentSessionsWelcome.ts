@@ -66,7 +66,7 @@ const configurationKey = 'workbench.startupEditor';
 const MAX_SESSIONS = 6;
 const MAX_REPO_PICKS = 10;
 const MAX_WALKTHROUGHS = 10;
-const WELCOME_CHAT_INPUT_LAYOUT_HEIGHT = 150;
+const WELCOME_CHAT_INPUT_LAYOUT_HEIGHT = 170;
 const WELCOME_CHAT_INPUT_RESERVED_LIST_HEIGHT = 50;
 const WELCOME_CHAT_INPUT_RESERVED_CHROME_HEIGHT = 72;
 // Mirror ChatWidget's compact-surface sizing so the hidden list reservation and input chrome do not collapse the editor.
@@ -249,7 +249,7 @@ export class AgentSessionsWelcomePage extends EditorPane {
 
 		// Header
 		const header = append(this.contentContainer, $('.agentSessionsWelcome-header'));
-		append(header, $('h1.product-name', {}, this.productService.nameLong));
+		append(header, $('h1.product-name', {}, localize('agentSessionsWelcomeHeadline', "What should Typio build?")));
 
 		const startEntries = append(header, $('.agentSessionsWelcome-startEntries'));
 		await this.buildStartEntries(startEntries);
@@ -817,7 +817,7 @@ export class AgentSessionsWelcomePage extends EditorPane {
 			return;
 		}
 
-		const chatWidth = Math.min(800, this.lastDimension.width - 80);
+		const chatWidth = Math.min(1040, this.lastDimension.width - 96);
 		this.chatWidget.setInputPartMaxHeightOverride(WELCOME_CHAT_INPUT_MAX_HEIGHT_OVERRIDE);
 		this.chatWidget.layout(WELCOME_CHAT_INPUT_LAYOUT_HEIGHT, chatWidth);
 	}
@@ -828,7 +828,7 @@ export class AgentSessionsWelcomePage extends EditorPane {
 		}
 
 		// TODO: @osortega this is a weird way of doing this, maybe we handle the 2-colum layout in the control itself?
-		const sessionsWidth = Math.min(800, this.lastDimension.width - 80);
+		const sessionsWidth = Math.min(1040, this.lastDimension.width - 96);
 		// Calculate height based on actual visible sessions (capped at MAX_SESSIONS)
 		// Use ITEM_HEIGHT per item from AgentSessionsListDelegate
 		// Give the list FULL height so virtualization renders all items

@@ -22,8 +22,8 @@
 	display: flex;
 	flex-direction: column;
 	align-items: center;
-	padding: 40px;
-	max-width: 900px;
+	padding: 56px 48px;
+	max-width: 1180px;
 	width: 100%;
 	box-sizing: border-box;
 }
@@ -32,42 +32,47 @@
 .agentSessionsWelcome-header {
 	display: flex;
 	flex-direction: column;
-	align-items: flex-start;
+	align-items: center;
 	width: 100%;
-	max-width: 800px;
+	max-width: 1040px;
 }
 
 .agentSessionsWelcome-header h1.product-name {
-	font-size: 32px;
-	font-weight: 400;
-	line-height: 1;
-	margin: 0 0 12px 0;
+	font-size: clamp(32px, 4.2vw, 52px);
+	font-weight: 450;
+	letter-spacing: -0.04em;
+	line-height: 1.08;
+	margin: 0 0 32px 0;
 	color: var(--vscode-foreground);
+	text-align: center;
 }
 
 .agentSessionsWelcome-startEntries {
 	display: flex;
-	gap: 16px;
+	gap: 18px;
 	flex-wrap: wrap;
-	justify-content: flex-start;
+	justify-content: center;
+	order: 2;
+	margin-top: 22px;
 }
 
 .agentSessionsWelcome-startEntry {
 	display: flex;
 	align-items: center;
-	gap: 6px;
-	padding: 4px 8px;
-	padding-left: 0;
+	gap: 7px;
+	padding: 5px 2px;
 	border: none;
-	border-radius: 4px;
+	border-radius: 999px;
 	background-color: transparent;
 	color: var(--vscode-descriptionForeground);
 	font-size: 13px;
 	cursor: pointer;
+	opacity: 0.78;
 }
 
 .agentSessionsWelcome-startEntry:hover {
-	color: var(--vscode-textLink-foreground);
+	color: var(--vscode-foreground);
+	opacity: 1;
 }
 
 .agentSessionsWelcome-startEntry .codicon {
@@ -77,8 +82,8 @@
 /* Chat widget section */
 .agentSessionsWelcome-chatSection {
 	width: 100%;
-	max-width: 800px;
-	margin-top: 24px;
+	max-width: 1040px;
+	margin-top: 0;
 }
 
 /* Hide the chat tree/list - we only want the input */
@@ -100,14 +105,107 @@
 /* Input part styling - match chat panel */
 .agentSessionsWelcome-chatWidget .interactive-input-part {
 	margin: 0;
-	padding: 16px 0;
+	padding: 0 0 14px 0;
+	border-radius: 28px;
+	background-color: color-mix(in srgb, var(--vscode-editor-background) 96%, var(--vscode-foreground) 4%);
+	box-shadow: 0 22px 60px color-mix(in srgb, var(--vscode-widget-shadow, #000) 14%, transparent), 0 2px 10px color-mix(in srgb, var(--vscode-widget-shadow, #000) 8%, transparent);
+	overflow: hidden;
+}
+
+.agentSessionsWelcome-chatWidget .interactive-input-and-side-toolbar {
+	gap: 0;
+}
+
+.monaco-workbench .agentSessionsWelcome-chatWidget .interactive-session .chat-input-container {
+	min-height: 172px;
+	padding: 16px 18px 14px 18px;
+	border-radius: 28px;
+	border-color: color-mix(in srgb, var(--vscode-input-border, var(--vscode-foreground)) 42%, transparent);
+	background-color: transparent;
+	box-shadow: none;
+	transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.monaco-workbench .agentSessionsWelcome-chatWidget .interactive-session .chat-input-container.focused {
+	border-color: color-mix(in srgb, var(--vscode-focusBorder) 42%, var(--vscode-input-border, transparent));
+}
+
+.agentSessionsWelcome-chatWidget .chat-editor-container {
+	padding: 0;
+}
+
+.agentSessionsWelcome-chatWidget .interactive-input-part .chat-editor-container .interactive-input-editor .monaco-editor,
+.agentSessionsWelcome-chatWidget .interactive-input-part .chat-editor-container .interactive-input-editor .monaco-editor .monaco-editor-background {
+	background-color: transparent;
+}
+
+.agentSessionsWelcome-chatWidget .interactive-input-part:not(.compact) .chat-editor-container .monaco-editor [class^="ced-chat-session-detail"] {
+	font-size: 20px;
+	color: color-mix(in srgb, var(--vscode-input-placeholderForeground) 86%, transparent);
+}
+
+.agentSessionsWelcome-chatWidget .chat-input-toolbars {
+	align-items: center;
+	gap: 10px;
+	margin-top: 14px;
+}
+
+.agentSessionsWelcome-chatWidget .chat-input-toolbars > .chat-input-toolbar,
+.agentSessionsWelcome-chatWidget .chat-secondary-toolbar .chat-secondary-input-toolbar {
+	color: var(--vscode-descriptionForeground);
+}
+
+.agentSessionsWelcome-chatWidget .chat-input-toolbar .action-label,
+.agentSessionsWelcome-chatWidget .chat-secondary-toolbar .action-label {
+	border-radius: 999px;
+}
+
+.agentSessionsWelcome-chatWidget .chat-input-toolbar .action-item:has(.codicon-add) .action-label {
+	width: 34px;
+	height: 34px;
+	border-radius: 999px;
+	background-color: color-mix(in srgb, var(--vscode-foreground) 7%, transparent);
+}
+
+.agentSessionsWelcome-chatWidget .chat-input-toolbar .action-item:has(.codicon-add) .codicon-add {
+	font-size: 20px;
+}
+
+.agentSessionsWelcome-chatWidget .chat-input-toolbar .chat-input-picker-item .action-label,
+.agentSessionsWelcome-chatWidget .chat-input-toolbar .chat-sessionPicker-item .action-label,
+.agentSessionsWelcome-chatWidget .chat-secondary-toolbar .chat-input-picker-item .action-label,
+.agentSessionsWelcome-chatWidget .chat-secondary-input-toolbar .chat-sessionPicker-item .action-label {
+	height: 26px;
+	padding: 4px 8px;
+	font-size: 13px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.agentSessionsWelcome-chatWidget .chat-input-toolbar .monaco-action-bar .actions-container > .action-item + .action-item::before,
+.agentSessionsWelcome-chatWidget .chat-secondary-input-toolbar .monaco-action-bar .actions-container > .action-item + .action-item::before {
+	display: none;
+}
+
+.agentSessionsWelcome-chatWidget .chat-input-toolbars > .chat-execute-toolbar .monaco-action-bar .action-item:has(> .action-label.codicon-arrow-up) > .action-label.codicon-arrow-up {
+	width: 40px;
+	height: 40px;
+	font-size: 18px;
+}
+
+.agentSessionsWelcome-chatWidget .chat-input-toolbars > .chat-execute-toolbar .monaco-action-bar .action-item.disabled > .action-label.codicon-arrow-up {
+	background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+	color: color-mix(in srgb, var(--vscode-foreground) 50%, transparent) !important;
+}
+
+.agentSessionsWelcome-chatWidget .chat-secondary-toolbar {
+	padding: 4px 18px 0 18px;
 }
 
 /* Suggested prompts */
 .agentSessionsWelcome-sessionsSection {
 	width: 100%;
-	max-width: 800px;
-	margin-top: 24px;
+	max-width: 1040px;
+	margin-top: 28px;
 }
 
 .agentSessionsWelcome-suggestedPrompts {
