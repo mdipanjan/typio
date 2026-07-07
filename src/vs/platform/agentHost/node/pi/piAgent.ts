@@ -12,12 +12,19 @@ import { AgentSession, type AgentProvider, type AgentSignal, type IActiveClient,
 import { ActionType, type ChatAction } from '../../common/state/sessionActions.js';
 import type { ResolveSessionConfigResult, SessionConfigCompletionsResult } from '../../common/state/protocol/commands.js';
 import type { AgentSelection, MessageAttachment, ModelSelection, ProtectedResourceMetadata, ToolDefinition } from '../../common/state/protocol/state.js';
-import { parseChatUri, type ChatInputAnswer, ChatInputResponseKind, type ClientPluginCustomization, type ToolCallResult, type Turn } from '../../common/state/sessionState.js';
+import { MessageKind, parseChatUri, PendingMessageKind, type ChatInputAnswer, ChatInputResponseKind, type ClientPluginCustomization, type ToolCallResult, type Turn } from '../../common/state/sessionState.js';
 import { PiRpcClient, type PiRpcMessage, type PiRpcObject } from './piRpcClient.js';
 import { mapPiRpcEventToActions, startPiTurn, type IPiTurnMapState } from './piEventMapper.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 
 export const PI_AGENT_PROVIDER_ID = 'pi' as const;
+
+interface IPiQueuedTurn {
+	readonly id: string;
+	readonly turnId: string;
+	readonly chat: URI;
+	readonly prompt: string;
+}
 
 interface IPiSessionRecord {
 	readonly session: URI;
@@ -27,6 +34,7 @@ interface IPiSessionRecord {
 	readonly summary: string;
 	readonly client: IPiSessionClient;
 	readonly disposables: DisposableStore;
+	readonly queuedTurns: IPiQueuedTurn[];
 	activeTurn?: { readonly chat: URI; readonly state: IPiTurnMapState };
 	disposing?: boolean;
 }
@@ -80,10 +88,26 @@ export class PiAgent extends Disposable implements IAgent {
 		},
 		sendMessage: async (chat: URI, prompt: string, _attachments?: readonly MessageAttachment[], turnId?: string, _senderClientId?: string): Promise<void> => {
 			const record = this._getRecordForChat(chat);
-			if (record.activeTurn) {
-				throw new Error('Pi Agent already has a prompt running in this session. Wait for it to finish or abort it before sending another prompt.');
-			}
 			record.modifiedTime = Date.now();
+			if (record.activeTurn) {
+				const queuedTurn: IPiQueuedTurn = { id: generateUuid(), turnId: turnId ?? generateUuid(), chat, prompt };
+				record.queuedTurns.push(queuedTurn);
+				this._fireChatAction(chat, {
+					type: ActionType.ChatPendingMessageSet,
+					kind: PendingMessageKind.Queued,
+					id: queuedTurn.id,
+					message: { text: prompt, origin: { kind: MessageKind.User } },
+				});
+				try {
+					await record.client.request('prompt', { message: prompt, streamingBehavior: 'followUp' });
+				} catch (error) {
+					removeQueuedTurn(record, queuedTurn.id);
+					this._fireChatAction(chat, { type: ActionType.ChatPendingMessageRemoved, kind: PendingMessageKind.Queued, id: queuedTurn.id });
+					this._fireChatAction(chat, createPiChatError(queuedTurn.turnId, error, record.client.stderr));
+					throw error;
+				}
+				return;
+			}
 			const state: IPiTurnMapState = { turnId: turnId ?? generateUuid(), prompt, toolCalls: new Map() };
 			record.activeTurn = { chat, state };
 			this._fireChatAction(chat, startPiTurn(state.turnId, prompt));
@@ -137,7 +161,7 @@ export class PiAgent extends Disposable implements IAgent {
 			throw new Error(formatPiSetupError(error, client.stderr));
 		}
 		const disposables = new DisposableStore();
-		const record: IPiSessionRecord = { session, startTime: now, modifiedTime: now, workingDirectory, summary, client, disposables };
+		const record: IPiSessionRecord = { session, startTime: now, modifiedTime: now, workingDirectory, summary, client, disposables, queuedTurns: [] };
 		disposables.add(client.onDidEvent(event => this._handlePiEvent(record, event)));
 		disposables.add(client.onDidExit(exit => this._handlePiExit(record, exit)));
 		this._sessions.set(AgentSession.id(session), record);
@@ -240,9 +264,18 @@ export class PiAgent extends Disposable implements IAgent {
 	}
 
 	private _handlePiEvent(record: IPiSessionRecord, event: PiRpcMessage): void {
-		const activeTurn = record.activeTurn;
+		let activeTurn = record.activeTurn;
 		if (!activeTurn) {
-			return;
+			const queuedTurn = record.queuedTurns[0];
+			if (!queuedTurn || !isPiTurnStartingEvent(event)) {
+				return;
+			}
+			record.queuedTurns.shift();
+			const state: IPiTurnMapState = { turnId: queuedTurn.turnId, prompt: queuedTurn.prompt, toolCalls: new Map() };
+			activeTurn = { chat: queuedTurn.chat, state };
+			record.activeTurn = activeTurn;
+			this._fireChatAction(activeTurn.chat, { type: ActionType.ChatPendingMessageRemoved, kind: PendingMessageKind.Queued, id: queuedTurn.id });
+			this._fireChatAction(activeTurn.chat, startPiTurn(state.turnId, queuedTurn.prompt));
 		}
 		for (const action of mapPiRpcEventToActions(activeTurn.state, event)) {
 			this._fireChatAction(activeTurn.chat, action);
@@ -312,6 +345,21 @@ export class PiAgent extends Disposable implements IAgent {
 		}
 		return record;
 	}
+}
+
+function removeQueuedTurn(record: IPiSessionRecord, id: string): void {
+	const index = record.queuedTurns.findIndex(turn => turn.id === id);
+	if (index >= 0) {
+		record.queuedTurns.splice(index, 1);
+	}
+}
+
+function isPiTurnStartingEvent(event: PiRpcMessage): boolean {
+	return event.type === 'agent_start'
+		|| event.type === 'turn_start'
+		|| event.type === 'message_start'
+		|| event.type === 'message_update'
+		|| event.type === 'tool_execution_start';
 }
 
 function createPiChatError(turnId: string, error: unknown, stderr: string): ChatAction {

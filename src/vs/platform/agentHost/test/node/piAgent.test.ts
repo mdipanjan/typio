@@ -151,16 +151,36 @@ suite('PiAgent', () => {
 		}
 	});
 
-	test('rejects concurrent prompts in the same Pi session', async () => {
+	test('queues prompts while Pi is still processing', async () => {
 		const client = new FakePiSessionClient();
 		const agent = new PiAgent(() => client);
 		try {
+			const signals: unknown[] = [];
+			const disposable = agent.onDidSessionProgress(signal => signals.push(signal));
 			const { session } = await agent.createSession({ workingDirectory: URI.file('/tmp/project') });
 			const chat = URI.parse(buildDefaultChatUri(session));
 
-			await agent.chats.sendMessage(chat, 'first');
+			await agent.chats.sendMessage(chat, 'first', undefined, 'turn-1');
+			client.fireEvent({ type: 'turn_end' });
+			await agent.chats.sendMessage(chat, 'second', undefined, 'turn-2');
 
-			await assert.rejects(agent.chats.sendMessage(chat, 'second'), /already running/);
+			assert.deepStrictEqual(client.requests, [
+				{ type: 'get_state', payload: undefined },
+				{ type: 'prompt', payload: { message: 'first' } },
+				{ type: 'prompt', payload: { message: 'second', streamingBehavior: 'followUp' } },
+			]);
+
+			client.fireEvent({ type: 'agent_end' });
+			client.fireEvent({ type: 'agent_start' });
+
+			disposable.dispose();
+			assert.deepStrictEqual(signals.map(signal => (signal as { action: { type: string } }).action.type), [
+				'chat/turnStarted',
+				'chat/pendingMessageSet',
+				'chat/turnComplete',
+				'chat/pendingMessageRemoved',
+				'chat/turnStarted',
+			]);
 		} finally {
 			agent.dispose();
 		}

@@ -126,7 +126,7 @@ export function mapPiRpcEventToActions(state: IPiTurnMapState, event: PiRpcMessa
 		}];
 	}
 
-	if (event.type === 'turn_end' || event.type === 'agent_end') {
+	if (event.type === 'agent_end') {
 		state.completed = true;
 		return [{ type: ActionType.ChatTurnComplete, turnId: state.turnId }];
 	}

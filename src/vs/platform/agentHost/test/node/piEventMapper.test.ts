@@ -95,6 +95,7 @@ suite('piEventMapper', () => {
 	test('maps completion once', () => {
 		const state: IPiTurnMapState = { turnId: 'turn-1', prompt: 'hello' };
 
+		assert.deepStrictEqual(mapPiRpcEventToActions(state, { type: 'turn_end' }), []);
 		assert.deepStrictEqual(mapPiRpcEventToActions(state, { type: 'agent_end' }), [
 			{ type: ActionType.ChatTurnComplete, turnId: 'turn-1' },
 		]);
