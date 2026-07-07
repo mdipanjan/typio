@@ -3,10 +3,10 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { RpcClient as PiPackageRpcClient, getPackageDir } from '@earendil-works/pi-coding-agent';
+import * as fs from 'fs';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { join } from '../../../../base/common/path.js';
+import { basename, delimiter, dirname, join } from '../../../../base/common/path.js';
 
 export type PiRpcJsonValue = null | boolean | number | string | readonly PiRpcJsonValue[] | { readonly [key: string]: PiRpcJsonValue };
 export type PiRpcObject = { readonly [key: string]: PiRpcJsonValue | undefined };
@@ -63,6 +63,11 @@ interface IPiPackageRpcClient {
 	process?: { readonly pid?: number; once(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): void } | null;
 }
 
+type PiPackageModule = {
+	readonly RpcClient: new (options: { readonly cliPath: string; readonly cwd?: string; readonly env?: Record<string, string>; readonly args?: string[] }) => IPiPackageRpcClient;
+	readonly getPackageDir: () => string;
+};
+
 export class PiRpcClient extends Disposable {
 	private readonly _client: IPiPackageRpcClient;
 	private _started: Promise<void> | undefined;
@@ -77,14 +82,7 @@ export class PiRpcClient extends Disposable {
 	readonly onDidExit: Event<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }> = this._onDidExit.event;
 
 	static spawn(options: IPiRpcSpawnOptions = {}): PiRpcClient {
-		const cliPath = options.executable || join(getPackageDir(), 'dist', 'cli.js');
-		const client = new PiPackageRpcClient({
-			cliPath,
-			cwd: options.cwd,
-			env: options.env as Record<string, string> | undefined,
-			args: options.extraArgs ? [...options.extraArgs] : undefined,
-		});
-		return new PiRpcClient(client as unknown as IPiPackageRpcClient);
+		return new PiRpcClient(new LazyPiPackageRpcClient(options));
 	}
 
 	constructor(client: IPiPackageRpcClient) {
@@ -149,6 +147,142 @@ export class PiRpcClient extends Disposable {
 		}
 		this._didAttachExit = true;
 		process.once('exit', (code, signal) => this._onDidExit.fire({ code, signal }));
+	}
+}
+
+class LazyPiPackageRpcClient implements IPiPackageRpcClient {
+	private _client: IPiPackageRpcClient | undefined;
+	private _startPromise: Promise<void> | undefined;
+	private readonly _listeners = new Set<(event: unknown) => void>();
+	private readonly _listenerDisposables: (() => void)[] = [];
+
+	constructor(private readonly _options: IPiRpcSpawnOptions) { }
+
+	get process(): IPiPackageRpcClient['process'] {
+		return this._client?.process;
+	}
+
+	async start(): Promise<void> {
+		this._startPromise ??= this._start();
+		return this._startPromise;
+	}
+
+	async stop(): Promise<void> {
+		await this._startPromise;
+		for (const dispose of this._listenerDisposables.splice(0)) {
+			dispose();
+		}
+		await this._client?.stop();
+	}
+
+	onEvent(listener: (event: unknown) => void): () => void {
+		this._listeners.add(listener);
+		const clientDisposable = this._client?.onEvent(listener);
+		if (clientDisposable) {
+			this._listenerDisposables.push(clientDisposable);
+		}
+		return () => {
+			this._listeners.delete(listener);
+			clientDisposable?.();
+		};
+	}
+
+	getStderr(): string {
+		return this._client?.getStderr() ?? '';
+	}
+
+	async send(command: PiRpcObject): Promise<PiRpcMessage> {
+		if (!this._client) {
+			throw new Error('Pi RPC client has not been started.');
+		}
+		return this._client.send(command);
+	}
+
+	private async _start(): Promise<void> {
+		const piPackage = await import('@earendil-works/pi-coding-agent') as unknown as PiPackageModule;
+		const cliPath = this._options.executable || join(piPackage.getPackageDir(), 'dist', 'cli.js');
+		this._client = new piPackage.RpcClient({
+			cliPath,
+			cwd: this._options.cwd,
+			env: buildPiRpcEnvironment(this._options.env),
+			args: this._options.extraArgs ? [...this._options.extraArgs] : undefined,
+		});
+		for (const listener of this._listeners) {
+			this._listenerDisposables.push(this._client.onEvent(listener));
+		}
+		await this._client.start();
+	}
+}
+
+export function buildPiRpcEnvironment(baseEnv: NodeJS.ProcessEnv = process.env): Record<string, string> {
+	const env: Record<string, string> = {};
+	for (const [key, value] of Object.entries(baseEnv)) {
+		if (typeof value === 'string') {
+			env[key] = value;
+		}
+	}
+
+	const pathKey = Object.keys(env).find(key => key.toLowerCase() === 'path') ?? 'PATH';
+	const pathEntries = (env[pathKey] ?? '').split(delimiter).filter(Boolean);
+	for (const candidate of getNodePathCandidates(env)) {
+		if (!pathEntries.includes(candidate)) {
+			pathEntries.unshift(candidate);
+		}
+	}
+	env[pathKey] = pathEntries.join(delimiter);
+	return env;
+}
+
+function getNodePathCandidates(env: Record<string, string>): string[] {
+	const candidates: string[] = [];
+	const explicitNodePath = env.VSCODE_AGENT_HOST_PI_NODE_PATH;
+	if (explicitNodePath) {
+		addNodeDirCandidate(candidates, isNodeExecutablePath(explicitNodePath) ? dirname(explicitNodePath) : explicitNodePath);
+	}
+	addNodeDirCandidate(candidates, dirname(process.execPath));
+
+	const home = env.HOME || env.USERPROFILE;
+	if (home) {
+		addNodeVersionManagerCandidates(candidates, join(home, '.nvm', 'versions', 'node'), versionDir => join(versionDir, 'bin'));
+		addNodeVersionManagerCandidates(candidates, join(home, '.local', 'share', 'fnm', 'node-versions'), versionDir => join(versionDir, 'installation', 'bin'));
+		addNodeVersionManagerCandidates(candidates, join(home, '.local', 'state', 'fnm_multishells'), versionDir => join(versionDir, 'bin'));
+	}
+
+	addNodeDirCandidate(candidates, '/opt/homebrew/bin');
+	addNodeDirCandidate(candidates, '/usr/local/bin');
+	addNodeDirCandidate(candidates, '/usr/bin');
+	return candidates;
+}
+
+function addNodeVersionManagerCandidates(candidates: string[], root: string, toBinDir: (versionDir: string) => string): void {
+	let entries: string[];
+	try {
+		entries = fs.readdirSync(root);
+	} catch {
+		return;
+	}
+	for (const entry of entries.sort().reverse()) {
+		addNodeDirCandidate(candidates, toBinDir(join(root, entry)));
+	}
+}
+
+function isNodeExecutablePath(path: string): boolean {
+	const name = basename(path).toLowerCase();
+	return name === 'node' || name === 'node.exe';
+}
+
+function addNodeDirCandidate(candidates: string[], directory: string): void {
+	const executableName = process.platform === 'win32' ? 'node.exe' : 'node';
+	const executable = join(directory, executableName);
+	try {
+		if (!fs.statSync(executable).isFile()) {
+			return;
+		}
+	} catch {
+		return;
+	}
+	if (!candidates.includes(directory)) {
+		candidates.push(directory);
 	}
 }
 

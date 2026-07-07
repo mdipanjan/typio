@@ -4,10 +4,13 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as os from 'os';
 import { EventEmitter } from 'events';
 import type { IDisposable } from '../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
-import { PiJsonlStreamParser, PiRpcClient, type PiRpcMessage, type PiRpcObject } from '../../node/pi/piRpcClient.js';
+import { delimiter, dirname, join } from '../../../../base/common/path.js';
+import { buildPiRpcEnvironment, PiJsonlStreamParser, PiRpcClient, type PiRpcMessage, type PiRpcObject } from '../../node/pi/piRpcClient.js';
 
 class FakePiPackageRpcClient {
 	readonly process = new EventEmitter() as EventEmitter & { pid?: number; once(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): EventEmitter };
@@ -96,6 +99,26 @@ suite('PiJsonlStreamParser', () => {
 suite('PiRpcClient', () => {
 
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('adds an explicitly configured Node.js directory to the Pi RPC PATH', () => {
+		const tempDir = fs.mkdtempSync(join(os.tmpdir(), 'typio-pi-node-'));
+		try {
+			const nodePath = join(tempDir, process.platform === 'win32' ? 'node.exe' : 'node');
+			fs.writeFileSync(nodePath, '');
+			const env = buildPiRpcEnvironment({ PATH: '/usr/bin', VSCODE_AGENT_HOST_PI_NODE_PATH: nodePath });
+			const pathEntries = env.PATH.split(delimiter);
+
+			assert.ok(pathEntries.includes(dirname(nodePath)));
+		} finally {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	test('preserves caller-provided Pi RPC environment variables', () => {
+		const env = buildPiRpcEnvironment({ PATH: '/usr/bin', PI_OFFLINE: '1' });
+
+		assert.strictEqual(env.PI_OFFLINE, '1');
+	});
 
 	test('starts bundled client lazily and forwards command responses', async () => {
 		const packageClient = new FakePiPackageRpcClient();
