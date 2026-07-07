@@ -29,6 +29,7 @@ import { ClaudeAgentSdkService, ClaudeSdkPackage, IClaudeAgentSdkService } from 
 import { ClaudeProxyService, IClaudeProxyService } from './claude/claudeProxyService.js';
 import { CodexAgent, CodexSdkPackage } from './codex/codexAgent.js';
 import { PiAgent } from './pi/piAgent.js';
+import { PiSessionStore } from './pi/piSessionStore.js';
 import { CodexProxyService, ICodexProxyService } from './codex/codexProxyService.js';
 import { ByokLmProxyService, IByokLmProxyService } from './copilot/byokLmProxyService.js';
 import { ByokLmBridgeRegistry, IByokLmBridgeRegistry } from './byokLmBridgeRegistry.js';
@@ -218,7 +219,7 @@ async function startAgentHost(): Promise<void> {
 		diServices.set(IAgentHostCompletions, agentService.completionsService);
 		agentService.registerProvider(instantiationService.createInstance(CopilotAgent));
 		if (isAgentEnabled(process.env[AgentHostPiAgentEnabledEnvVar], true)) {
-			agentService.registerProvider(instantiationService.createInstance(PiAgent));
+			agentService.registerProvider(instantiationService.createInstance(PiAgent, undefined, instantiationService.createInstance(PiSessionStore)));
 		}
 		// Claude and Codex providers are gated on two things:
 		//  1. The user-facing enable toggle (`chat.agentHost.<x>Agent.enabled`,
