@@ -372,7 +372,6 @@ export class NewChatInputWidget extends Disposable implements IHistoryNavigation
 
 		this._createEditor(inputArea, editorOverflowWidgetsDomNode);
 		this._createInputToolbar(inputArea);
-
 		const newChatBottomContainer = dom.append(parent, dom.$('.new-chat-bottom-container'));
 		const newChatControlsContainer = dom.append(newChatBottomContainer, dom.$('.new-chat-controls-container'));
 		if (this.options.renderSessionTypePickerInControls !== false) {

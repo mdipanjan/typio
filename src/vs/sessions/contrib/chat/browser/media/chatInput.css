@@ -5,10 +5,13 @@
 
 .new-chat-input-container {
 	width: 100%;
-	max-width: 800px;
-	margin-top: 12px;
+	max-width: 760px;
+	margin-top: 16px;
 	box-sizing: border-box;
 	display: none;
+	background-color: color-mix(in srgb, var(--vscode-editor-background) 96%, var(--vscode-foreground) 4%);
+	border-radius: 20px 20px 0 0;
+	box-shadow: 0 26px 70px color-mix(in srgb, var(--vscode-widget-shadow, #000) 12%, transparent), 0 2px 10px color-mix(in srgb, var(--vscode-widget-shadow, #000) 8%, transparent);
 }
 
 /* Ensure the input editor fits properly */
@@ -35,19 +38,21 @@
 .new-chat-input-area {
 	position: relative;
 	width: 100%;
-	max-width: 800px;
+	max-width: 760px;
 	box-sizing: border-box;
-	border: 1px solid var(--vscode-agentsChatInput-border);
-	border-radius: var(--vscode-cornerRadius-large);
-	background-color: var(--vscode-agentsChatInput-background);
+	border: 1px solid color-mix(in srgb, var(--vscode-agentsChatInput-border, var(--vscode-foreground)) 45%, transparent);
+	border-radius: 20px;
+	background-color: transparent;
 	color: var(--vscode-agentsChatInput-foreground);
 	overflow: hidden;
 	display: flex;
 	flex-direction: column;
+	transition: border-color 120ms ease, background-color 120ms ease;
+	cursor: text;
 }
 
 .new-chat-input-area:focus-within {
-	border-color: var(--vscode-agentsChatInput-focusBorder, var(--vscode-focusBorder));
+	border-color: color-mix(in srgb, var(--vscode-agentsChatInput-focusBorder, var(--vscode-focusBorder)) 55%, transparent);
 }
 
 .new-chat-input-area .monaco-editor .ghost-text-decoration {
@@ -86,7 +91,7 @@
 
 /* Height constraints are driven by MIN_EDITOR_HEIGHT / MAX_EDITOR_HEIGHT in newChatViewPane.ts */
 .sessions-chat-editor {
-	padding: 2px 10px 0 10px;
+	padding: 10px 14px 0 14px;
 	flex-shrink: 1;
 }
 
@@ -127,9 +132,9 @@
 .sessions-chat-toolbar {
 	display: flex;
 	align-items: center;
-	padding: 4px 6px 6px 6px;
-	gap: 4px;
-	color: var(--vscode-icon-foreground);
+	padding: 8px 10px 10px 10px;
+	gap: 8px;
+	color: var(--vscode-descriptionForeground);
 }
 
 .sessions-chat-toolbar-spacer {
@@ -173,14 +178,14 @@
 .sessions-chat-config-toolbar .action-label {
 	display: flex;
 	align-items: center;
-	height: 16px;
-	padding: 3px 7px;
+	height: 24px;
+	padding: 4px 8px;
 	background-color: transparent;
 	border: none;
-	border-radius: var(--vscode-cornerRadius-small);
+	border-radius: 999px;
 	cursor: pointer;
 	touch-action: manipulation;
-	color: var(--vscode-icon-foreground);
+	color: var(--vscode-descriptionForeground);
 	white-space: nowrap;
 	min-width: 30px;
 	overflow: hidden;
@@ -193,7 +198,7 @@
 
 .sessions-chat-config-toolbar .action-label,
 .sessions-chat-config-toolbar .action-label .chat-input-picker-label {
-	font-size: var(--vscode-agents-fontSize-label2, 11px);
+	font-size: 13px;
 }
 
 /* Allow long labels (e.g. the model picker name) to ellipsize when space is tight */
@@ -242,8 +247,8 @@
 	justify-content: center;
 	flex-shrink: 0;
 	position: relative;
-	width: 22px;
-	height: 22px;
+	width: 32px;
+	height: 32px;
 	border-radius: 50%;
 }
 
@@ -251,9 +256,9 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	width: 22px;
-	height: 22px;
-	min-width: 22px;
+	width: 32px;
+	height: 32px;
+	min-width: 32px;
 	padding: 0;
 	border-radius: 50%;
 	color: var(--vscode-icon-foreground);
@@ -267,6 +272,8 @@
 
 .sessions-chat-send-button .monaco-button.disabled {
 	cursor: default;
+	background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+	color: color-mix(in srgb, var(--vscode-foreground) 50%, transparent) !important;
 }
 
 /* Focus indicator drawn on the wrapper so it sits cleanly around the
@@ -351,13 +358,13 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	width: 22px;
-	height: 22px;
+	width: 28px;
+	height: 28px;
 	flex-shrink: 0;
-	border-radius: var(--vscode-cornerRadius-small);
+	border-radius: 999px;
 	cursor: pointer;
 	color: var(--vscode-icon-foreground);
-	background: transparent;
+	background: color-mix(in srgb, var(--vscode-foreground) 7%, transparent);
 	border: none;
 	outline: none;
 }
@@ -372,7 +379,7 @@
 }
 
 .monaco-workbench .sessions-chat-attach-button .codicon[class*='codicon-'] {
-	font-size: 14px;
+	font-size: 17px;
 }
 
 /* Attached context container */

@@ -374,16 +374,10 @@ export class NewChatWidget extends Disposable {
 	private _renderWorkspacePicker(container: HTMLElement): IDisposable {
 		this._workspacePickerVisibleKey.set(true);
 		const pickersRow = dom.append(container, dom.$('.session-workspace-picker'));
-		const pickersLabel = dom.append(pickersRow, dom.$('.session-workspace-picker-label'));
-		pickersLabel.textContent = this._workspacePicker.selectedFolderUri
-			? localize('newSessionIn', "New session in")
-			: localize('newSessionChooseWorkspace', "Start by picking a");
 
 		this._workspacePicker.render(pickersRow);
 
 		if (!this._renderHarnessPickerInControls) {
-			const withLabel = dom.append(pickersRow, dom.$('.session-workspace-picker-label.session-workspace-picker-with-label'));
-			withLabel.textContent = localize('newSessionWith', "with");
 			this._workspacePickerRow = pickersRow;
 			// On web the composer is never a quick chat, so keep the harness
 			// picker inline in the workspace row. On desktop the placement is
@@ -392,12 +386,7 @@ export class NewChatWidget extends Disposable {
 				this._newChatInput.sessionTypePicker.render(pickersRow, { className: 'sessions-chat-session-type-picker' });
 			}
 		}
-		return this._workspacePicker.onDidSelectWorkspace(() => {
-			const folderUri = this._workspacePicker.selectedFolderUri;
-			pickersLabel.textContent = folderUri
-				? localize('newSessionIn', "New session in")
-				: localize('newSessionChooseWorkspace', "Start by picking a");
-		});
+		return this._workspacePicker.onDidSelectWorkspace(() => { });
 	}
 
 	private _renderEmptyState(container: HTMLElement): IDisposable {
