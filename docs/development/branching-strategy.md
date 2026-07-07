@@ -17,10 +17,13 @@ Push to `upstream` is disabled locally for safety.
 
 ```txt
 vscode/main = clean VS Code base
-main        = Typio product branch
+main        = pristine Typio product branch
+develop     = Typio integration branch
 ```
 
-`main` is the default branch for the Typio repo, so normal product commits and PRs count as project work on GitHub.
+`main` is the stable/pristine Typio branch. Do not merge day-to-day feature PRs directly into it.
+
+`develop` is where Typio product PRs land first.
 
 ## Mental Model
 
@@ -29,13 +32,15 @@ microsoft/vscode
       ↓
 vscode/main      clean upstream-compatible VS Code
       ↓
-main             Typio product work
+develop          Typio integration work
+      ↓
+main             pristine Typio product branch
 ```
 
 Changes flow downward only:
 
 ```txt
-upstream/main → vscode/main → main
+upstream/main → vscode/main → develop → main
 ```
 
 Never merge Typio product changes back into `vscode/main`.
@@ -52,18 +57,24 @@ Use `vscode/main` only for:
 
 Do not put Typio branding, taste, onboarding, or product-specific behavior on `vscode/main`.
 
+### `develop`
+
+Use `develop` for:
+
+- Typio product PRs
+- documentation PRs
+- feature integration
+- Pi Agent integration
+- onboarding and UX work
+- product-specific workflows
+
+Feature branches should usually branch from `develop` and open PRs back into `develop`.
+
 ### `main`
 
-Use `main` for:
+Use `main` as the pristine/stable Typio branch.
 
-- Typio branding
-- tasteful shell changes
-- onboarding
-- custom defaults
-- Agent/Sessions UX changes
-- Pi Agent integration
-- product-specific workflows
-- documentation about Typio strategy
+Only merge `develop` into `main` when we intentionally promote a reviewed, working product state.
 
 ## Creating an Upstream Fix
 
@@ -79,16 +90,16 @@ git checkout -b upstream/fix-something
 After making the fix, if Typio also needs it:
 
 ```bash
-git checkout main
+git checkout develop
 git cherry-pick <fix-commit-sha>
 ```
 
 ## Creating Typio Product Work
 
-Start from `main`:
+Start from `develop`:
 
 ```bash
-git checkout main
+git checkout develop
 git pull
 git checkout -b product/something
 ```
@@ -96,7 +107,18 @@ git checkout -b product/something
 Open PRs back into:
 
 ```txt
-main
+develop
+```
+
+## Promoting Develop to Main
+
+Only after review/testing:
+
+```bash
+git checkout main
+git pull
+git merge develop
+git push origin main
 ```
 
 ## Updating Typio from VS Code
@@ -108,8 +130,16 @@ git checkout vscode/main
 git merge upstream/main
 git push origin vscode/main
 
-git checkout main
+git checkout develop
 git merge vscode/main
+git push origin develop
+```
+
+Then promote to `main` only when ready:
+
+```bash
+git checkout main
+git merge develop
 git push origin main
 ```
 
@@ -121,6 +151,8 @@ Do not run:
 git checkout vscode/main
 git merge main
 ```
+
+Do not merge feature branches directly into `main` unless we intentionally skip `develop` for an emergency.
 
 Do not mix upstreamable fixes and Typio product changes in one commit.
 
@@ -136,7 +168,9 @@ product: add Pi Agent integration plan
 
 - local working folder may still be named `vscode`
 - GitHub private repo is `mdipanjan/typio`
-- `origin/main` is Typio product work
 - `origin/vscode/main` is the clean VS Code mirror
+- `origin/develop` is Typio integration work
+- `origin/main` is pristine/stable Typio
 - development happens in the local VS Code checkout
-- product PRs target `main`
+- product PRs target `develop`
+- promotion PRs/merges go from `develop` to `main`

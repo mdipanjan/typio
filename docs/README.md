@@ -15,7 +15,7 @@ The goal of these docs is to keep product decisions explicit before we make larg
 
 1. **Do not rebuild VS Code's core editor.** We inherit the editor, workbench, language stack, terminal, Git, debugger, and extension ecosystem.
 2. **Document the inherited product before redesigning it.** We need to understand what VS Code already does before deciding what Typio changes.
-3. **Separate product taste from upstream fixes.** Clean VS Code-compatible fixes belong on `vscode/main`; Typio work belongs on `main`.
+3. **Separate product taste from upstream fixes.** Clean VS Code-compatible fixes belong on `vscode/main`; Typio feature work lands on `develop`; `main` stays pristine/stable.
 4. **Treat UX as architecture.** Onboarding, empty states, auth prompts, command surfaces, layout, and session memory are core product systems, not decoration.
 5. **Prefer staged changes.** Start with docs, then defaults and onboarding, then narrow workbench contributions, then deeper changes only when necessary.
 
