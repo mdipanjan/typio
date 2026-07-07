@@ -12,6 +12,26 @@ import { ActionType } from '../../common/state/sessionActions.js';
 import { buildDefaultChatUri } from '../../common/state/sessionState.js';
 import { PiAgent, PI_AGENT_PROVIDER_ID } from '../../node/pi/piAgent.js';
 import type { PiRpcMessage, PiRpcObject } from '../../node/pi/piRpcClient.js';
+import type { IPiStoredSession, IPiStoredSessionUpdate, PiSessionStore } from '../../node/pi/piSessionStore.js';
+
+class FakePiSessionStore {
+	readonly writes: { readonly session: URI; readonly update: IPiStoredSessionUpdate }[] = [];
+	readonly sessions = new Map<string, IPiStoredSession>();
+
+	async write(session: URI, update: IPiStoredSessionUpdate): Promise<void> {
+		this.writes.push({ session, update });
+		const existing = this.sessions.get(session.toString());
+		this.sessions.set(session.toString(), { session, startTime: update.startTime ?? existing?.startTime ?? Date.now(), modifiedTime: update.modifiedTime ?? existing?.modifiedTime ?? Date.now(), workingDirectory: update.workingDirectory ?? existing?.workingDirectory, summary: update.summary ?? existing?.summary, piSessionId: update.piSessionId ?? existing?.piSessionId, piSessionFile: update.piSessionFile ?? existing?.piSessionFile, piSessionName: update.piSessionName ?? existing?.piSessionName });
+	}
+
+	async read(session: URI): Promise<IPiStoredSession | undefined> {
+		return this.sessions.get(session.toString());
+	}
+
+	async list(): Promise<readonly IPiStoredSession[]> {
+		return [...this.sessions.values()];
+	}
+}
 
 class FakePiSessionClient {
 	private readonly _onDidEvent = new Emitter<PiRpcMessage>();
@@ -98,6 +118,49 @@ suite('PiAgent', () => {
 			const metadata = await agent.getSessionMetadata(result.session);
 			assert.strictEqual(metadata?.summary, 'Implement feature');
 			assert.deepStrictEqual(metadata?._meta?.pi, { sessionId: 'pi-123', sessionFile: '/tmp/pi-session.jsonl', sessionName: 'Implement feature' });
+		} finally {
+			agent.dispose();
+		}
+	});
+
+	test('persists Pi session metadata and lists stored sessions', async () => {
+		const client = new FakePiSessionClient();
+		client.responses.set('get_state', { type: 'response', success: true, data: { sessionId: 'pi-123', sessionFile: '/tmp/pi-session.jsonl', sessionName: 'Implement feature' } });
+		const store = new FakePiSessionStore();
+		const agent = new PiAgent(() => client, store as unknown as PiSessionStore);
+		try {
+			const result = await agent.createSession({ workingDirectory: URI.file('/tmp/project') });
+
+			assert.strictEqual(store.writes.length, 1);
+			assert.deepStrictEqual(store.writes[0].session, result.session);
+			assert.strictEqual(store.writes[0].update.piSessionFile, '/tmp/pi-session.jsonl');
+
+			await agent.disposeSession(result.session);
+			const sessions = await agent.listSessions();
+
+			assert.strictEqual(sessions.length, 1);
+			assert.deepStrictEqual(sessions[0].session, result.session);
+			assert.strictEqual(sessions[0].summary, 'Implement feature');
+		} finally {
+			agent.dispose();
+		}
+	});
+
+	test('restores stored Pi sessions before hydrating messages', async () => {
+		const client = new FakePiSessionClient();
+		client.responses.set('get_state', { type: 'response', success: true, data: { sessionId: 'pi-restored', sessionFile: '/tmp/pi-restored.jsonl', sessionName: 'Restored' } });
+		client.responses.set('get_messages', { type: 'response', success: true, data: { messages: [{ role: 'user', content: 'hello from disk' }] } });
+		const store = new FakePiSessionStore();
+		const session = AgentSession.uri(PI_AGENT_PROVIDER_ID, 'stored');
+		store.sessions.set(session.toString(), { session, startTime: 1, modifiedTime: 2, workingDirectory: URI.file('/tmp/project'), summary: 'Stored', piSessionId: 'pi-stored', piSessionFile: '/tmp/pi-stored.jsonl', piSessionName: 'Stored' });
+		const agent = new PiAgent(() => client, store as unknown as PiSessionStore);
+		try {
+			const turns = await agent.getSessionMessages(session);
+
+			assert.strictEqual(turns.length, 1);
+			assert.strictEqual(turns[0].message.text, 'hello from disk');
+			assert.deepStrictEqual(client.requests.map(request => request.type), ['switch_session', 'get_state', 'get_messages']);
+			assert.deepStrictEqual(client.requests[0].payload, { sessionPath: '/tmp/pi-stored.jsonl' });
 		} finally {
 			agent.dispose();
 		}

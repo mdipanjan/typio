@@ -15,6 +15,7 @@ import type { AgentSelection, MessageAttachment, ModelSelection, ProtectedResour
 import { ChatInputAnswerState, ChatInputAnswerValueKind, ChatInputQuestionKind, MessageKind, parseChatUri, PendingMessageKind, ResponsePartKind, TurnState, type ChatInputAnswer, type ChatInputRequest, ChatInputResponseKind, type ClientPluginCustomization, type ResponsePart, type ToolCallResult, type Turn } from '../../common/state/sessionState.js';
 import { PiRpcClient, type PiRpcMessage, type PiRpcObject } from './piRpcClient.js';
 import { mapPiRpcEventToActions, startPiTurn, type IPiTurnMapState } from './piEventMapper.js';
+import { PiSessionStore, type IPiStoredSession } from './piSessionStore.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 
 export const PI_AGENT_PROVIDER_ID = 'pi' as const;
@@ -77,7 +78,10 @@ export class PiAgent extends Disposable implements IAgent {
 	private readonly _pendingExtensionRequests = new Map<string, { readonly client: IPiSessionClient; readonly method: string }>();
 	private _nextSessionId = 1;
 
-	constructor(private readonly _createClient: PiClientFactory = options => PiRpcClient.spawn({ cwd: options.cwd })) {
+	constructor(
+		private readonly _createClient: PiClientFactory = options => PiRpcClient.spawn({ cwd: options.cwd }),
+		private readonly _sessionStore?: PiSessionStore,
+	) {
 		super();
 	}
 
@@ -92,8 +96,9 @@ export class PiAgent extends Disposable implements IAgent {
 			// Pi's first slice is single-chat; there are no peer chats to dispose.
 		},
 		sendMessage: async (chat: URI, prompt: string, _attachments?: readonly MessageAttachment[], turnId?: string, _senderClientId?: string): Promise<void> => {
-			const record = this._getRecordForChat(chat);
+			const record = await this._getOrCreateRecordForChat(chat);
 			record.modifiedTime = Date.now();
+			void this._persistRecord(record);
 			if (record.activeTurn) {
 				const queuedTurn: IPiQueuedTurn = { id: generateUuid(), turnId: turnId ?? generateUuid(), chat, prompt };
 				record.queuedTurns.push(queuedTurn);
@@ -125,7 +130,7 @@ export class PiAgent extends Disposable implements IAgent {
 			}
 		},
 		abort: async (chat: URI): Promise<void> => {
-			const record = this._getRecordForChat(chat);
+			const record = await this._getOrCreateRecordForChat(chat);
 			const activeTurn = record.activeTurn;
 			await record.client.request('abort');
 			if (activeTurn) {
@@ -134,10 +139,10 @@ export class PiAgent extends Disposable implements IAgent {
 			}
 		},
 		changeModel: async (chat: URI, _model: ModelSelection): Promise<void> => {
-			this._assertKnownChat(chat);
+			await this._getOrCreateRecordForChat(chat);
 		},
 		changeAgent: async (chat: URI, _agent: AgentSelection | undefined): Promise<void> => {
-			this._assertKnownChat(chat);
+			await this._getOrCreateRecordForChat(chat);
 		},
 		getMessages: async (chat: URI): Promise<readonly Turn[]> => {
 			return this.getSessionMessages(this._getSessionForChat(chat));
@@ -169,11 +174,8 @@ export class PiAgent extends Disposable implements IAgent {
 		const piSessionFile = typeof stateData?.sessionFile === 'string' ? stateData.sessionFile : undefined;
 		const piSessionName = typeof stateData?.sessionName === 'string' ? stateData.sessionName : undefined;
 		const actualSession = config?.session ?? AgentSession.uri(this.id, piSessionId ? sanitizePiSessionId(piSessionId) : `pi-session-${this._nextSessionId++}`);
-		const disposables = new DisposableStore();
-		const record: IPiSessionRecord = { session: actualSession, startTime: now, modifiedTime: now, workingDirectory, summary: piSessionName || summary, piSessionId, piSessionFile, piSessionName, client, disposables, queuedTurns: [] };
-		disposables.add(client.onDidEvent(event => this._handlePiEvent(record, event)));
-		disposables.add(client.onDidExit(exit => this._handlePiExit(record, exit)));
-		this._sessions.set(AgentSession.id(actualSession), record);
+		const record = this._registerSessionRecord({ session: actualSession, startTime: now, modifiedTime: now, workingDirectory, summary: piSessionName || summary, piSessionId, piSessionFile, piSessionName, client });
+		void this._persistRecord(record);
 		return {
 			session: actualSession,
 			workingDirectory,
@@ -190,7 +192,7 @@ export class PiAgent extends Disposable implements IAgent {
 	}
 
 	async getSessionMessages(session: URI): Promise<readonly Turn[]> {
-		const record = this._getRecord(session);
+		const record = await this._getOrCreateRecord(session);
 		const response = await record.client.request('get_messages');
 		return piMessagesToTurns(getPiMessages(response));
 	}
@@ -223,12 +225,25 @@ export class PiAgent extends Disposable implements IAgent {
 	}
 
 	async listSessions(): Promise<IAgentSessionMetadata[]> {
-		return [...this._sessions.values()].map(record => this._toMetadata(record));
+		const sessions = new Map<string, IAgentSessionMetadata>();
+		for (const record of this._sessions.values()) {
+			sessions.set(AgentSession.id(record.session), this._toMetadata(record));
+		}
+		for (const stored of await this._sessionStore?.list() ?? []) {
+			if (!sessions.has(AgentSession.id(stored.session))) {
+				sessions.set(AgentSession.id(stored.session), this._storedToMetadata(stored));
+			}
+		}
+		return [...sessions.values()];
 	}
 
 	async getSessionMetadata(session: URI): Promise<IAgentSessionMetadata | undefined> {
 		const record = this._sessions.get(AgentSession.id(session));
-		return record ? this._toMetadata(record) : undefined;
+		if (record) {
+			return this._toMetadata(record);
+		}
+		const stored = await this._sessionStore?.read(session);
+		return stored ? this._storedToMetadata(stored) : undefined;
 	}
 
 	getProtectedResources(): ProtectedResourceMetadata[] {
@@ -351,6 +366,58 @@ export class PiAgent extends Disposable implements IAgent {
 		this._onDidSessionProgress.fire({ kind: 'action', resource: chat, action });
 	}
 
+	private _registerSessionRecord(options: Omit<IPiSessionRecord, 'disposables' | 'queuedTurns'>): IPiSessionRecord {
+		const disposables = new DisposableStore();
+		const record: IPiSessionRecord = { ...options, disposables, queuedTurns: [] };
+		disposables.add(record.client.onDidEvent(event => this._handlePiEvent(record, event)));
+		disposables.add(record.client.onDidExit(exit => this._handlePiExit(record, exit)));
+		this._sessions.set(AgentSession.id(record.session), record);
+		return record;
+	}
+
+	private async _materializeStoredSession(stored: IPiStoredSession): Promise<IPiSessionRecord> {
+		const client = this._createClient({ cwd: stored.workingDirectory?.fsPath });
+		try {
+			if (stored.piSessionFile) {
+				const switchResult = await client.request('switch_session', { sessionPath: stored.piSessionFile });
+				const switchData = getPiResponseData(switchResult);
+				if (switchData?.cancelled === true) {
+					throw new Error('Pi cancelled restoring this session.');
+				}
+			}
+			const state = await client.request('get_state');
+			const stateData = getPiResponseData(state);
+			const record = this._registerSessionRecord({
+				session: stored.session,
+				startTime: stored.startTime,
+				modifiedTime: Date.now(),
+				workingDirectory: stored.workingDirectory,
+				summary: stored.summary ?? stored.piSessionName ?? 'Pi Agent',
+				piSessionId: typeof stateData?.sessionId === 'string' ? stateData.sessionId : stored.piSessionId,
+				piSessionFile: typeof stateData?.sessionFile === 'string' ? stateData.sessionFile : stored.piSessionFile,
+				piSessionName: typeof stateData?.sessionName === 'string' ? stateData.sessionName : stored.piSessionName,
+				client,
+			});
+			void this._persistRecord(record);
+			return record;
+		} catch (error) {
+			client.dispose();
+			throw error;
+		}
+	}
+
+	private async _persistRecord(record: IPiSessionRecord): Promise<void> {
+		await this._sessionStore?.write(record.session, {
+			startTime: record.startTime,
+			modifiedTime: record.modifiedTime,
+			workingDirectory: record.workingDirectory,
+			summary: record.summary,
+			piSessionId: record.piSessionId,
+			piSessionFile: record.piSessionFile,
+			piSessionName: record.piSessionName,
+		});
+	}
+
 	private _toMetadata(record: IPiSessionRecord): IAgentSessionMetadata {
 		return {
 			session: record.session,
@@ -369,12 +436,20 @@ export class PiAgent extends Disposable implements IAgent {
 		};
 	}
 
-	private _assertKnownChat(chat: URI): URI {
-		return this._getSessionForChat(chat);
+	private _storedToMetadata(stored: IPiStoredSession): IAgentSessionMetadata {
+		return {
+			session: stored.session,
+			startTime: stored.startTime,
+			modifiedTime: stored.modifiedTime,
+			workingDirectory: stored.workingDirectory,
+			project: stored.workingDirectory ? { uri: stored.workingDirectory, displayName: basename(stored.workingDirectory.fsPath) || stored.workingDirectory.fsPath } : undefined,
+			summary: stored.piSessionName || stored.summary,
+			_meta: { pi: { sessionId: stored.piSessionId, sessionFile: stored.piSessionFile, sessionName: stored.piSessionName } },
+		};
 	}
 
-	private _getRecordForChat(chat: URI): IPiSessionRecord {
-		return this._getRecord(this._getSessionForChat(chat));
+	private async _getOrCreateRecordForChat(chat: URI): Promise<IPiSessionRecord> {
+		return this._getOrCreateRecord(this._getSessionForChat(chat));
 	}
 
 	private _getSessionForChat(chat: URI): URI {
@@ -382,21 +457,19 @@ export class PiAgent extends Disposable implements IAgent {
 		if (!parsed) {
 			throw new Error(`Pi Agent chat operation requires an Agent Host chat URI: ${chat.toString()}`);
 		}
-		const session = URI.parse(parsed.session);
-		this._assertKnownSession(session);
-		return session;
+		return URI.parse(parsed.session);
 	}
 
-	private _assertKnownSession(session: URI): void {
-		this._getRecord(session);
-	}
-
-	private _getRecord(session: URI): IPiSessionRecord {
-		const record = this._sessions.get(AgentSession.id(session));
-		if (!record) {
+	private async _getOrCreateRecord(session: URI): Promise<IPiSessionRecord> {
+		const existing = this._sessions.get(AgentSession.id(session));
+		if (existing) {
+			return existing;
+		}
+		const stored = await this._sessionStore?.read(session);
+		if (!stored) {
 			throw new Error(`Pi Agent session not found: ${session.toString()}`);
 		}
-		return record;
+		return this._materializeStoredSession(stored);
 	}
 }
 
