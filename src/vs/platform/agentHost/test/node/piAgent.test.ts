@@ -26,6 +26,10 @@ class FakePiSessionClient {
 		return { type: 'response', success: true };
 	}
 
+	fireEvent(event: PiRpcMessage): void {
+		this._onDidEvent.fire(event);
+	}
+
 	dispose(): void {
 		this.disposed = true;
 		this._onDidEvent.dispose();
@@ -85,6 +89,32 @@ suite('PiAgent', () => {
 			assert.deepStrictEqual(client.requests, [
 				{ type: 'get_state', payload: undefined },
 				{ type: 'prompt', payload: { message: 'hello' } },
+			]);
+		} finally {
+			agent.dispose();
+		}
+	});
+
+	test('maps Pi text stream events to agent progress actions', async () => {
+		const client = new FakePiSessionClient();
+		const agent = new PiAgent(() => client);
+		try {
+			const signals: unknown[] = [];
+			const disposable = agent.onDidSessionProgress(signal => signals.push(signal));
+			const { session } = await agent.createSession({ workingDirectory: URI.file('/tmp/project') });
+			const chat = URI.parse(buildDefaultChatUri(session));
+
+			await agent.chats.sendMessage(chat, 'hello', undefined, 'turn-1');
+			client.fireEvent({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Hi' } });
+			client.fireEvent({ type: 'agent_end' });
+
+			disposable.dispose();
+			assert.strictEqual(signals.length, 4);
+			assert.deepStrictEqual(signals.map(signal => (signal as { action: { type: string } }).action.type), [
+				'chat/turnStarted',
+				'chat/responsePart',
+				'chat/delta',
+				'chat/turnComplete',
 			]);
 		} finally {
 			agent.dispose();

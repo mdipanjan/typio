@@ -4,15 +4,18 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Emitter, type Event } from '../../../../base/common/event.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { type IObservable, observableValue } from '../../../../base/common/observable.js';
 import { basename } from '../../../../base/common/path.js';
 import { URI } from '../../../../base/common/uri.js';
 import { AgentSession, type AgentProvider, type AgentSignal, type IActiveClient, type IAgent, type IAgentChats, type IAgentCreateChatForkSource, type IAgentCreateChatOptions, type IAgentCreateChatResult, type IAgentCreateSessionConfig, type IAgentCreateSessionResult, type IAgentDescriptor, type IAgentModelInfo, type IAgentResolveSessionConfigParams, type IAgentSessionConfigCompletionsParams, type IAgentSessionMetadata } from '../../common/agentService.js';
+import type { ChatAction } from '../../common/state/sessionActions.js';
 import type { ResolveSessionConfigResult, SessionConfigCompletionsResult } from '../../common/state/protocol/commands.js';
 import type { AgentSelection, MessageAttachment, ModelSelection, ProtectedResourceMetadata, ToolDefinition } from '../../common/state/protocol/state.js';
 import { parseChatUri, type ChatInputAnswer, ChatInputResponseKind, type ClientPluginCustomization, type ToolCallResult, type Turn } from '../../common/state/sessionState.js';
 import { PiRpcClient, type PiRpcMessage, type PiRpcObject } from './piRpcClient.js';
+import { mapPiRpcEventToActions, startPiTurn, type IPiTurnMapState } from './piEventMapper.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 
 export const PI_AGENT_PROVIDER_ID = 'pi' as const;
 
@@ -23,6 +26,8 @@ interface IPiSessionRecord {
 	readonly workingDirectory: URI | undefined;
 	readonly summary: string;
 	readonly client: IPiSessionClient;
+	readonly disposables: DisposableStore;
+	activeTurn?: { readonly chat: URI; readonly state: IPiTurnMapState };
 }
 
 interface IPiSessionClient {
@@ -74,10 +79,18 @@ export class PiAgent extends Disposable implements IAgent {
 		disposeChat: async (_chat: URI): Promise<void> => {
 			// Pi's first slice is single-chat; there are no peer chats to dispose.
 		},
-		sendMessage: async (chat: URI, prompt: string, _attachments?: readonly MessageAttachment[], _turnId?: string, _senderClientId?: string): Promise<void> => {
+		sendMessage: async (chat: URI, prompt: string, _attachments?: readonly MessageAttachment[], turnId?: string, _senderClientId?: string): Promise<void> => {
 			const record = this._getRecordForChat(chat);
 			record.modifiedTime = Date.now();
-			await record.client.request('prompt', { message: prompt });
+			const state: IPiTurnMapState = { turnId: turnId ?? generateUuid(), prompt };
+			record.activeTurn = { chat, state };
+			this._fireChatAction(chat, startPiTurn(state.turnId, prompt));
+			try {
+				await record.client.request('prompt', { message: prompt });
+			} catch (error) {
+				record.activeTurn = undefined;
+				throw error;
+			}
 		},
 		abort: async (chat: URI): Promise<void> => {
 			const record = this._getRecordForChat(chat);
@@ -115,7 +128,11 @@ export class PiAgent extends Disposable implements IAgent {
 			client.dispose();
 			throw new Error(`Pi Agent failed to start. Make sure Pi is installed and configured. ${error instanceof Error ? error.message : String(error)}`);
 		}
-		this._sessions.set(AgentSession.id(session), { session, startTime: now, modifiedTime: now, workingDirectory, summary, client });
+		const disposables = new DisposableStore();
+		const record: IPiSessionRecord = { session, startTime: now, modifiedTime: now, workingDirectory, summary, client, disposables };
+		disposables.add(client.onDidEvent(event => this._handlePiEvent(record, event)));
+		disposables.add(client.onDidExit(() => record.activeTurn = undefined));
+		this._sessions.set(AgentSession.id(session), record);
 		return {
 			session,
 			workingDirectory,
@@ -138,6 +155,7 @@ export class PiAgent extends Disposable implements IAgent {
 
 	async disposeSession(session: URI): Promise<void> {
 		const record = this._sessions.get(AgentSession.id(session));
+		record?.disposables.dispose();
 		record?.client.dispose();
 		this._sessions.delete(AgentSession.id(session));
 	}
@@ -194,9 +212,27 @@ export class PiAgent extends Disposable implements IAgent {
 
 	async shutdown(): Promise<void> {
 		for (const record of this._sessions.values()) {
+			record.disposables.dispose();
 			record.client.dispose();
 		}
 		this._sessions.clear();
+	}
+
+	private _handlePiEvent(record: IPiSessionRecord, event: PiRpcMessage): void {
+		const activeTurn = record.activeTurn;
+		if (!activeTurn) {
+			return;
+		}
+		for (const action of mapPiRpcEventToActions(activeTurn.state, event)) {
+			this._fireChatAction(activeTurn.chat, action);
+		}
+		if (activeTurn.state.completed) {
+			record.activeTurn = undefined;
+		}
+	}
+
+	private _fireChatAction(chat: URI, action: ChatAction): void {
+		this._onDidSessionProgress.fire({ kind: 'action', resource: chat, action });
 	}
 
 	private _toMetadata(record: IPiSessionRecord): IAgentSessionMetadata {
