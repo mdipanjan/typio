@@ -6,6 +6,7 @@
 import * as assert from 'assert';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
+import type { IDisposable } from '../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { PiJsonlStreamParser, PiRpcClient, type IPiRpcProcess } from '../../node/pi/piRpcClient.js';
 
@@ -98,14 +99,17 @@ suite('PiRpcClient', () => {
 	test('emits non-response events', async () => {
 		const process = new FakePiRpcProcess();
 		const client = new PiRpcClient(process);
+		let disposable: IDisposable | undefined;
 		try {
-			const eventPromise = new Promise(resolve => client.onDidEvent(resolve));
+			const eventPromise = new Promise(resolve => disposable = client.onDidEvent(resolve));
 
 			process.stdout.write('{"type":"agent_start"}\n');
 			const event = await eventPromise;
+			disposable?.dispose();
 
 			assert.deepStrictEqual(event, { type: 'agent_start' });
 		} finally {
+			disposable?.dispose();
 			client.dispose();
 		}
 	});
