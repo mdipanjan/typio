@@ -50,6 +50,20 @@ export function mapPiRpcEventToActions(state: IPiTurnMapState, event: PiRpcMessa
 			});
 			return actions;
 		}
+		if (assistantEvent.type === 'error') {
+			state.completed = true;
+			if (assistantEvent.reason === 'aborted') {
+				return [{ type: ActionType.ChatTurnCancelled, turnId: state.turnId }];
+			}
+			return [{
+				type: ActionType.ChatError,
+				turnId: state.turnId,
+				error: {
+					errorType: 'pi.rpc.error',
+					message: typeof assistantEvent.message === 'string' ? assistantEvent.message : 'Pi Agent encountered an error.',
+				},
+			}];
+		}
 		return [];
 	}
 
