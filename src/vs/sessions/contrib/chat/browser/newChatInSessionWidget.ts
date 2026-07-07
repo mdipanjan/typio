@@ -81,7 +81,9 @@ export class NewChatInSessionWidget extends Disposable {
 			canSendRequest,
 			loading,
 			historyKey: constObservable(undefined), // no persisted history for the new-chat-in-session view
-			minEditorHeight: 64,
+			// No minEditorHeight override — use NewChatInputWidget's default (matches
+			// the welcome/new-session composer's compact sizing instead of reserving
+			// extra empty vertical space in the editor).
 			placeholder: localize('newChatInSessionPlaceholder', 'Ask a follow-up question or start a new topic within this session...'),
 			supportsBackground: true,
 		}));
