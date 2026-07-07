@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Emitter } from '../../../../base/common/event.js';
+import { Emitter, type Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { type IObservable, observableValue } from '../../../../base/common/observable.js';
 import { basename } from '../../../../base/common/path.js';
@@ -12,10 +12,9 @@ import { AgentSession, type AgentProvider, type AgentSignal, type IActiveClient,
 import type { ResolveSessionConfigResult, SessionConfigCompletionsResult } from '../../common/state/protocol/commands.js';
 import type { AgentSelection, MessageAttachment, ModelSelection, ProtectedResourceMetadata, ToolDefinition } from '../../common/state/protocol/state.js';
 import { parseChatUri, type ChatInputAnswer, ChatInputResponseKind, type ClientPluginCustomization, type ToolCallResult, type Turn } from '../../common/state/sessionState.js';
+import { PiRpcClient, type PiRpcMessage, type PiRpcObject } from './piRpcClient.js';
 
 export const PI_AGENT_PROVIDER_ID = 'pi' as const;
-
-const PI_AGENT_NOT_CONNECTED_MESSAGE = 'Pi Agent runtime is not connected yet. The provider skeleton is registered; RPC subprocess support will be added in the next implementation slice.';
 
 interface IPiSessionRecord {
 	readonly session: URI;
@@ -23,7 +22,22 @@ interface IPiSessionRecord {
 	modifiedTime: number;
 	readonly workingDirectory: URI | undefined;
 	readonly summary: string;
+	readonly client: IPiSessionClient;
 }
+
+interface IPiSessionClient {
+	readonly onDidEvent: Event<PiRpcMessage>;
+	readonly onDidExit: Event<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }>;
+	readonly stderr: string;
+	request(type: string, payload?: PiRpcObject): Promise<PiRpcMessage>;
+	dispose(): void;
+}
+
+interface IPiClientFactoryOptions {
+	readonly cwd?: string;
+}
+
+type PiClientFactory = (options: IPiClientFactoryOptions) => IPiSessionClient;
 
 /**
  * First Typio-owned Agent Host provider.
@@ -46,6 +60,10 @@ export class PiAgent extends Disposable implements IAgent {
 	private readonly _sessions = new Map<string, IPiSessionRecord>();
 	private _nextSessionId = 1;
 
+	constructor(private readonly _createClient: PiClientFactory = options => PiRpcClient.spawn({ cwd: options.cwd })) {
+		super();
+	}
+
 	readonly chats: IAgentChats = {
 		createChat: async (_chat: URI, _options?: IAgentCreateChatOptions): Promise<IAgentCreateChatResult | void> => {
 			throw new Error('Pi Agent does not support multiple chats yet.');
@@ -56,12 +74,14 @@ export class PiAgent extends Disposable implements IAgent {
 		disposeChat: async (_chat: URI): Promise<void> => {
 			// Pi's first slice is single-chat; there are no peer chats to dispose.
 		},
-		sendMessage: async (chat: URI, _prompt: string, _attachments?: readonly MessageAttachment[], _turnId?: string, _senderClientId?: string): Promise<void> => {
-			this._assertKnownChat(chat);
-			throw new Error(PI_AGENT_NOT_CONNECTED_MESSAGE);
+		sendMessage: async (chat: URI, prompt: string, _attachments?: readonly MessageAttachment[], _turnId?: string, _senderClientId?: string): Promise<void> => {
+			const record = this._getRecordForChat(chat);
+			record.modifiedTime = Date.now();
+			await record.client.request('prompt', { message: prompt });
 		},
 		abort: async (chat: URI): Promise<void> => {
-			this._assertKnownChat(chat);
+			const record = this._getRecordForChat(chat);
+			await record.client.request('abort');
 		},
 		changeModel: async (chat: URI, _model: ModelSelection): Promise<void> => {
 			this._assertKnownChat(chat);
@@ -88,7 +108,14 @@ export class PiAgent extends Disposable implements IAgent {
 		const now = Date.now();
 		const workingDirectory = config?.workingDirectory;
 		const summary = workingDirectory ? `Pi Agent · ${basename(workingDirectory.fsPath) || workingDirectory.fsPath}` : 'Pi Agent Quick Chat';
-		this._sessions.set(AgentSession.id(session), { session, startTime: now, modifiedTime: now, workingDirectory, summary });
+		const client = this._createClient({ cwd: workingDirectory?.fsPath });
+		try {
+			await client.request('get_state');
+		} catch (error) {
+			client.dispose();
+			throw new Error(`Pi Agent failed to start. Make sure Pi is installed and configured. ${error instanceof Error ? error.message : String(error)}`);
+		}
+		this._sessions.set(AgentSession.id(session), { session, startTime: now, modifiedTime: now, workingDirectory, summary, client });
 		return {
 			session,
 			workingDirectory,
@@ -110,6 +137,8 @@ export class PiAgent extends Disposable implements IAgent {
 	}
 
 	async disposeSession(session: URI): Promise<void> {
+		const record = this._sessions.get(AgentSession.id(session));
+		record?.client.dispose();
 		this._sessions.delete(AgentSession.id(session));
 	}
 
@@ -164,6 +193,9 @@ export class PiAgent extends Disposable implements IAgent {
 	}
 
 	async shutdown(): Promise<void> {
+		for (const record of this._sessions.values()) {
+			record.client.dispose();
+		}
 		this._sessions.clear();
 	}
 
@@ -179,6 +211,14 @@ export class PiAgent extends Disposable implements IAgent {
 	}
 
 	private _assertKnownChat(chat: URI): URI {
+		return this._getSessionForChat(chat);
+	}
+
+	private _getRecordForChat(chat: URI): IPiSessionRecord {
+		return this._getRecord(this._getSessionForChat(chat));
+	}
+
+	private _getSessionForChat(chat: URI): URI {
 		const parsed = parseChatUri(chat);
 		if (!parsed) {
 			throw new Error(`Pi Agent chat operation requires an Agent Host chat URI: ${chat.toString()}`);
@@ -189,8 +229,14 @@ export class PiAgent extends Disposable implements IAgent {
 	}
 
 	private _assertKnownSession(session: URI): void {
-		if (!this._sessions.has(AgentSession.id(session))) {
+		this._getRecord(session);
+	}
+
+	private _getRecord(session: URI): IPiSessionRecord {
+		const record = this._sessions.get(AgentSession.id(session));
+		if (!record) {
 			throw new Error(`Pi Agent session not found: ${session.toString()}`);
 		}
+		return record;
 	}
 }

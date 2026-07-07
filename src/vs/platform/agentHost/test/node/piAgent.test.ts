@@ -4,11 +4,34 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as assert from 'assert';
+import { Emitter } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { AgentSession } from '../../common/agentService.js';
 import { buildDefaultChatUri } from '../../common/state/sessionState.js';
 import { PiAgent, PI_AGENT_PROVIDER_ID } from '../../node/pi/piAgent.js';
+import type { PiRpcMessage, PiRpcObject } from '../../node/pi/piRpcClient.js';
+
+class FakePiSessionClient {
+	private readonly _onDidEvent = new Emitter<PiRpcMessage>();
+	readonly onDidEvent = this._onDidEvent.event;
+	private readonly _onDidExit = new Emitter<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }>();
+	readonly onDidExit = this._onDidExit.event;
+	readonly stderr = '';
+	readonly requests: { readonly type: string; readonly payload?: PiRpcObject }[] = [];
+	disposed = false;
+
+	async request(type: string, payload?: PiRpcObject): Promise<PiRpcMessage> {
+		this.requests.push({ type, payload });
+		return { type: 'response', success: true };
+	}
+
+	dispose(): void {
+		this.disposed = true;
+		this._onDidEvent.dispose();
+		this._onDidExit.dispose();
+	}
+}
 
 suite('PiAgent', () => {
 
@@ -29,11 +52,13 @@ suite('PiAgent', () => {
 	});
 
 	test('creates and lists in-memory session metadata', async () => {
-		const agent = new PiAgent();
+		const client = new FakePiSessionClient();
+		const agent = new PiAgent(() => client);
 		try {
 			const workingDirectory = URI.file('/tmp/typio-pi-project');
 			const result = await agent.createSession({ workingDirectory });
 
+			assert.deepStrictEqual(client.requests, [{ type: 'get_state', payload: undefined }]);
 			assert.strictEqual(result.session.scheme, PI_AGENT_PROVIDER_ID);
 			assert.strictEqual(AgentSession.provider(result.session), PI_AGENT_PROVIDER_ID);
 			assert.deepStrictEqual(result.workingDirectory, workingDirectory);
@@ -48,16 +73,33 @@ suite('PiAgent', () => {
 		}
 	});
 
-	test('rejects send before RPC runtime is connected', async () => {
-		const agent = new PiAgent();
+	test('sends prompts through the Pi RPC client', async () => {
+		const client = new FakePiSessionClient();
+		const agent = new PiAgent(() => client);
 		try {
 			const { session } = await agent.createSession({ workingDirectory: URI.file('/tmp/project') });
 			const chat = URI.parse(buildDefaultChatUri(session));
 
-			await assert.rejects(
-				agent.chats.sendMessage(chat, 'hello'),
-				/Pi Agent runtime is not connected yet/
-			);
+			await agent.chats.sendMessage(chat, 'hello');
+
+			assert.deepStrictEqual(client.requests, [
+				{ type: 'get_state', payload: undefined },
+				{ type: 'prompt', payload: { message: 'hello' } },
+			]);
+		} finally {
+			agent.dispose();
+		}
+	});
+
+	test('disposes Pi RPC client with the session', async () => {
+		const client = new FakePiSessionClient();
+		const agent = new PiAgent(() => client);
+		try {
+			const { session } = await agent.createSession({ workingDirectory: URI.file('/tmp/project') });
+
+			await agent.disposeSession(session);
+
+			assert.strictEqual(client.disposed, true);
 		} finally {
 			agent.dispose();
 		}
