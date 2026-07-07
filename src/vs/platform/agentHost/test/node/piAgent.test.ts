@@ -8,9 +8,30 @@ import { Emitter } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { AgentSession } from '../../common/agentService.js';
+import { ActionType } from '../../common/state/sessionActions.js';
 import { buildDefaultChatUri } from '../../common/state/sessionState.js';
 import { PiAgent, PI_AGENT_PROVIDER_ID } from '../../node/pi/piAgent.js';
 import type { PiRpcMessage, PiRpcObject } from '../../node/pi/piRpcClient.js';
+import type { IPiStoredSession, IPiStoredSessionUpdate, PiSessionStore } from '../../node/pi/piSessionStore.js';
+
+class FakePiSessionStore {
+	readonly writes: { readonly session: URI; readonly update: IPiStoredSessionUpdate }[] = [];
+	readonly sessions = new Map<string, IPiStoredSession>();
+
+	async write(session: URI, update: IPiStoredSessionUpdate): Promise<void> {
+		this.writes.push({ session, update });
+		const existing = this.sessions.get(session.toString());
+		this.sessions.set(session.toString(), { session, startTime: update.startTime ?? existing?.startTime ?? Date.now(), modifiedTime: update.modifiedTime ?? existing?.modifiedTime ?? Date.now(), workingDirectory: update.workingDirectory ?? existing?.workingDirectory, summary: update.summary ?? existing?.summary, piSessionId: update.piSessionId ?? existing?.piSessionId, piSessionFile: update.piSessionFile ?? existing?.piSessionFile, piSessionName: update.piSessionName ?? existing?.piSessionName });
+	}
+
+	async read(session: URI): Promise<IPiStoredSession | undefined> {
+		return this.sessions.get(session.toString());
+	}
+
+	async list(): Promise<readonly IPiStoredSession[]> {
+		return [...this.sessions.values()];
+	}
+}
 
 class FakePiSessionClient {
 	private readonly _onDidEvent = new Emitter<PiRpcMessage>();
@@ -19,11 +40,24 @@ class FakePiSessionClient {
 	readonly onDidExit = this._onDidExit.event;
 	readonly stderr = '';
 	readonly requests: { readonly type: string; readonly payload?: PiRpcObject }[] = [];
+	readonly responses = new Map<string, PiRpcMessage>();
 	disposed = false;
+	requestError: Error | undefined;
 
 	async request(type: string, payload?: PiRpcObject): Promise<PiRpcMessage> {
 		this.requests.push({ type, payload });
-		return { type: 'response', success: true };
+		if (this.requestError) {
+			throw this.requestError;
+		}
+		return this.responses.get(type) ?? { type: 'response', success: true };
+	}
+
+	fireEvent(event: PiRpcMessage): void {
+		this._onDidEvent.fire(event);
+	}
+
+	fireExit(code: number | null, signal: NodeJS.Signals | null = null): void {
+		this._onDidExit.fire({ code, signal });
 	}
 
 	dispose(): void {
@@ -73,6 +107,98 @@ suite('PiAgent', () => {
 		}
 	});
 
+	test('uses Pi session state in metadata when available', async () => {
+		const client = new FakePiSessionClient();
+		client.responses.set('get_state', { type: 'response', success: true, data: { sessionId: 'pi-123', sessionFile: '/tmp/pi-session.jsonl', sessionName: 'Implement feature' } });
+		const agent = new PiAgent(() => client);
+		try {
+			const result = await agent.createSession({ workingDirectory: URI.file('/tmp/project') });
+
+			assert.strictEqual(AgentSession.id(result.session), 'pi-123');
+			const metadata = await agent.getSessionMetadata(result.session);
+			assert.strictEqual(metadata?.summary, 'Implement feature');
+			assert.deepStrictEqual(metadata?._meta?.pi, { sessionId: 'pi-123', sessionFile: '/tmp/pi-session.jsonl', sessionName: 'Implement feature' });
+		} finally {
+			agent.dispose();
+		}
+	});
+
+	test('persists Pi session metadata and lists stored sessions', async () => {
+		const client = new FakePiSessionClient();
+		client.responses.set('get_state', { type: 'response', success: true, data: { sessionId: 'pi-123', sessionFile: '/tmp/pi-session.jsonl', sessionName: 'Implement feature' } });
+		const store = new FakePiSessionStore();
+		const agent = new PiAgent(() => client, store as unknown as PiSessionStore);
+		try {
+			const result = await agent.createSession({ workingDirectory: URI.file('/tmp/project') });
+
+			assert.strictEqual(store.writes.length, 1);
+			assert.deepStrictEqual(store.writes[0].session, result.session);
+			assert.strictEqual(store.writes[0].update.piSessionFile, '/tmp/pi-session.jsonl');
+
+			await agent.disposeSession(result.session);
+			const sessions = await agent.listSessions();
+
+			assert.strictEqual(sessions.length, 1);
+			assert.deepStrictEqual(sessions[0].session, result.session);
+			assert.strictEqual(sessions[0].summary, 'Implement feature');
+		} finally {
+			agent.dispose();
+		}
+	});
+
+	test('restores stored Pi sessions before hydrating messages', async () => {
+		const client = new FakePiSessionClient();
+		client.responses.set('get_state', { type: 'response', success: true, data: { sessionId: 'pi-restored', sessionFile: '/tmp/pi-restored.jsonl', sessionName: 'Restored' } });
+		client.responses.set('get_messages', { type: 'response', success: true, data: { messages: [{ role: 'user', content: 'hello from disk' }] } });
+		const store = new FakePiSessionStore();
+		const session = AgentSession.uri(PI_AGENT_PROVIDER_ID, 'stored');
+		store.sessions.set(session.toString(), { session, startTime: 1, modifiedTime: 2, workingDirectory: URI.file('/tmp/project'), summary: 'Stored', piSessionId: 'pi-stored', piSessionFile: '/tmp/pi-stored.jsonl', piSessionName: 'Stored' });
+		const agent = new PiAgent(() => client, store as unknown as PiSessionStore);
+		try {
+			const turns = await agent.getSessionMessages(session);
+
+			assert.strictEqual(turns.length, 1);
+			assert.strictEqual(turns[0].message.text, 'hello from disk');
+			assert.deepStrictEqual(client.requests.map(request => request.type), ['switch_session', 'get_state', 'get_messages']);
+			assert.deepStrictEqual(client.requests[0].payload, { sessionPath: '/tmp/pi-stored.jsonl' });
+		} finally {
+			agent.dispose();
+		}
+	});
+
+	test('hydrates turns from Pi get_messages', async () => {
+		const client = new FakePiSessionClient();
+		client.responses.set('get_messages', {
+			type: 'response',
+			success: true,
+			data: {
+				messages: [
+					{ role: 'user', content: 'hello' },
+					{ role: 'assistant', content: [{ type: 'thinking', thinking: 'Need answer.' }, { type: 'text', text: 'Hi there' }], model: 'test-model', usage: { input: 1, output: 2, cacheRead: 3 } },
+					{ role: 'toolResult', content: [{ type: 'text', text: 'tool output' }] },
+				],
+			},
+		});
+		const agent = new PiAgent(() => client);
+		try {
+			const { session } = await agent.createSession({ workingDirectory: URI.file('/tmp/project') });
+			const chat = URI.parse(buildDefaultChatUri(session));
+
+			const turns = await agent.chats.getMessages(chat);
+
+			assert.strictEqual(turns.length, 1);
+			assert.strictEqual(turns[0].message.text, 'hello');
+			assert.deepStrictEqual(turns[0].responseParts.map(part => part.kind), ['reasoning', 'markdown', 'systemNotification']);
+			assert.strictEqual(turns[0].usage?.model, 'test-model');
+			assert.strictEqual(turns[0].usage?.inputTokens, 1);
+			assert.strictEqual(turns[0].usage?.outputTokens, 2);
+			assert.strictEqual(turns[0].usage?.cacheReadTokens, 3);
+			assert.deepStrictEqual(client.requests.map(request => request.type), ['get_state', 'get_messages']);
+		} finally {
+			agent.dispose();
+		}
+	});
+
 	test('sends prompts through the Pi RPC client', async () => {
 		const client = new FakePiSessionClient();
 		const agent = new PiAgent(() => client);
@@ -86,6 +212,123 @@ suite('PiAgent', () => {
 				{ type: 'get_state', payload: undefined },
 				{ type: 'prompt', payload: { message: 'hello' } },
 			]);
+		} finally {
+			agent.dispose();
+		}
+	});
+
+	test('maps Pi text stream events to agent progress actions', async () => {
+		const client = new FakePiSessionClient();
+		const agent = new PiAgent(() => client);
+		try {
+			const signals: unknown[] = [];
+			const disposable = agent.onDidSessionProgress(signal => signals.push(signal));
+			const { session } = await agent.createSession({ workingDirectory: URI.file('/tmp/project') });
+			const chat = URI.parse(buildDefaultChatUri(session));
+
+			await agent.chats.sendMessage(chat, 'hello', undefined, 'turn-1');
+			client.fireEvent({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Hi' } });
+			client.fireEvent({ type: 'agent_end' });
+
+			disposable.dispose();
+			assert.strictEqual(signals.length, 5);
+			assert.deepStrictEqual(signals.map(signal => (signal as { action: { type: string } }).action.type), [
+				'chat/turnStarted',
+				'chat/responsePart',
+				'chat/delta',
+				'chat/activityChanged',
+				'chat/turnComplete',
+			]);
+		} finally {
+			agent.dispose();
+		}
+	});
+
+	test('surfaces prompt failures as chat errors', async () => {
+		const client = new FakePiSessionClient();
+		const agent = new PiAgent(() => client);
+		try {
+			const signals: unknown[] = [];
+			const disposable = agent.onDidSessionProgress(signal => signals.push(signal));
+			const { session } = await agent.createSession({ workingDirectory: URI.file('/tmp/project') });
+			const chat = URI.parse(buildDefaultChatUri(session));
+			client.requestError = new Error('not logged in');
+
+			await assert.rejects(agent.chats.sendMessage(chat, 'hello', undefined, 'turn-1'), /not logged in/);
+
+			disposable.dispose();
+			const errorSignal = signals.find(signal => (signal as { action: { type: string } }).action.type === ActionType.ChatError);
+			assert.ok(errorSignal);
+			assert.match((errorSignal as { action: { error: { message: string } } }).action.error.message, /Sign in to Pi|not logged in/);
+		} finally {
+			agent.dispose();
+		}
+	});
+
+	test('queues prompts while Pi is still processing', async () => {
+		const client = new FakePiSessionClient();
+		const agent = new PiAgent(() => client);
+		try {
+			const signals: unknown[] = [];
+			const disposable = agent.onDidSessionProgress(signal => signals.push(signal));
+			const { session } = await agent.createSession({ workingDirectory: URI.file('/tmp/project') });
+			const chat = URI.parse(buildDefaultChatUri(session));
+
+			await agent.chats.sendMessage(chat, 'first', undefined, 'turn-1');
+			client.fireEvent({ type: 'turn_end' });
+			await agent.chats.sendMessage(chat, 'second', undefined, 'turn-2');
+
+			assert.deepStrictEqual(client.requests, [
+				{ type: 'get_state', payload: undefined },
+				{ type: 'prompt', payload: { message: 'first' } },
+				{ type: 'prompt', payload: { message: 'second', streamingBehavior: 'followUp' } },
+			]);
+
+			client.fireEvent({ type: 'agent_end' });
+			client.fireEvent({ type: 'agent_start' });
+
+			disposable.dispose();
+			assert.deepStrictEqual(signals.map(signal => (signal as { action: { type: string } }).action.type), [
+				'chat/turnStarted',
+				'chat/pendingMessageSet',
+				'chat/activityChanged',
+				'chat/turnComplete',
+				'chat/pendingMessageRemoved',
+				'chat/turnStarted',
+			]);
+		} finally {
+			agent.dispose();
+		}
+	});
+
+	test('turns active prompts into chat errors when the Pi process exits', async () => {
+		const client = new FakePiSessionClient();
+		const agent = new PiAgent(() => client);
+		try {
+			const signals: unknown[] = [];
+			const disposable = agent.onDidSessionProgress(signal => signals.push(signal));
+			const { session } = await agent.createSession({ workingDirectory: URI.file('/tmp/project') });
+			const chat = URI.parse(buildDefaultChatUri(session));
+
+			await agent.chats.sendMessage(chat, 'hello', undefined, 'turn-1');
+			client.fireExit(1);
+
+			disposable.dispose();
+			const errorSignal = signals.find(signal => (signal as { action: { type: string } }).action.type === ActionType.ChatError);
+			assert.ok(errorSignal);
+			assert.match((errorSignal as { action: { error: { message: string } } }).action.error.message, /Pi RPC process exited with code 1/);
+		} finally {
+			agent.dispose();
+		}
+	});
+
+	test('reports a helpful startup error when Pi is missing', async () => {
+		const client = new FakePiSessionClient();
+		client.requestError = Object.assign(new Error('spawn pi ENOENT'), { code: 'ENOENT' });
+		const agent = new PiAgent(() => client);
+		try {
+			await assert.rejects(agent.createSession({ workingDirectory: URI.file('/tmp/project') }), /Pi CLI was not found/);
+			assert.strictEqual(client.disposed, true);
 		} finally {
 			agent.dispose();
 		}

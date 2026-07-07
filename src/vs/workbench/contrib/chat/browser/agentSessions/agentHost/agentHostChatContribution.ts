@@ -220,16 +220,17 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 		// Keep the delegation picker available for local agent host sessions in
 		// both VS Code and the Agents app so users can hand off (continue) their
 		// conversation to any other agent host session or remote target.
+		const isPiAgent = agent.provider === 'pi';
 		store.add(this._chatSessionsService.registerChatSessionContribution({
 			type: sessionType,
 			name: agentId,
 			displayName: agent.displayName,
 			description: agent.description,
-			customAgentTarget: this._isSessionsWindow ? undefined : Target.GitHubCopilot,
+			customAgentTarget: this._isSessionsWindow || isPiAgent ? undefined : Target.GitHubCopilot,
 			canDelegate: true,
-			requiresCustomModels: true,
+			requiresCustomModels: !isPiAgent,
 			supportsAutoModel: agentHostProviderSupportsAutoModel(agent.provider),
-			requiresCopilotSignIn: true,
+			requiresCopilotSignIn: !isPiAgent,
 			agentHostProviderId: agent.provider,
 			supportsDelegation: true,
 			capabilities: {
