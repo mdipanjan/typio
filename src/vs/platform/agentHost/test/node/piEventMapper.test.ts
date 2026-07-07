@@ -39,6 +39,21 @@ suite('piEventMapper', () => {
 		assert.strictEqual(actions[1].content, 'Hi');
 	});
 
+	test('maps thinking deltas to reasoning parts', () => {
+		const state: IPiTurnMapState = { turnId: 'turn-1', prompt: 'hello' };
+		const actions = mapPiRpcEventToActions(state, {
+			type: 'message_update',
+			assistantMessageEvent: { type: 'thinking_delta', delta: 'Need inspect files.' },
+		});
+
+		assert.strictEqual(actions.length, 2);
+		assert.strictEqual(actions[0].type, ActionType.ChatResponsePart);
+		assert.strictEqual(actions[0].part.kind, ResponsePartKind.Reasoning);
+		assert.strictEqual(actions[1].type, ActionType.ChatReasoning);
+		assert.strictEqual(actions[1].partId, actions[0].part.id);
+		assert.strictEqual(actions[1].content, 'Need inspect files.');
+	});
+
 	test('maps tool execution lifecycle', () => {
 		const state: IPiTurnMapState = { turnId: 'turn-1', prompt: 'hello', toolCalls: new Map() };
 
@@ -92,10 +107,32 @@ suite('piEventMapper', () => {
 		assert.strictEqual(actions[0].error.message, 'not logged in');
 	});
 
+	test('uses agent_end final assistant text when no text delta arrived', () => {
+		const state: IPiTurnMapState = { turnId: 'turn-1', prompt: 'hello' };
+		const actions = mapPiRpcEventToActions(state, {
+			type: 'agent_end',
+			messages: [{ role: 'assistant', content: [{ type: 'text', text: 'Final answer' }], model: 'm', usage: { input: 1, output: 2, cacheRead: 3 } }],
+		});
+
+		assert.deepStrictEqual(actions.map(action => action.type), [
+			ActionType.ChatResponsePart,
+			ActionType.ChatDelta,
+			ActionType.ChatUsage,
+			ActionType.ChatActivityChanged,
+			ActionType.ChatTurnComplete,
+		]);
+		assert.strictEqual(actions[1].type, ActionType.ChatDelta);
+		assert.strictEqual(actions[1].content, 'Final answer');
+		assert.strictEqual(actions[2].type, ActionType.ChatUsage);
+		assert.deepStrictEqual(actions[2].usage, { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, model: 'm', _meta: { provider: undefined, cost: undefined } });
+	});
+
 	test('maps completion once', () => {
 		const state: IPiTurnMapState = { turnId: 'turn-1', prompt: 'hello' };
 
+		assert.deepStrictEqual(mapPiRpcEventToActions(state, { type: 'turn_end' }), []);
 		assert.deepStrictEqual(mapPiRpcEventToActions(state, { type: 'agent_end' }), [
+			{ type: ActionType.ChatActivityChanged, activity: undefined },
 			{ type: ActionType.ChatTurnComplete, turnId: 'turn-1' },
 		]);
 		assert.deepStrictEqual(mapPiRpcEventToActions(state, { type: 'agent_end' }), []);
