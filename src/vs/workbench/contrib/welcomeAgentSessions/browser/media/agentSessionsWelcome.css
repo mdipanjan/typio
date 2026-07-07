@@ -22,8 +22,8 @@
 	display: flex;
 	flex-direction: column;
 	align-items: center;
-	padding: 56px 48px;
-	max-width: 1180px;
+	padding: 48px 40px;
+	max-width: 920px;
 	width: 100%;
 	box-sizing: border-box;
 }
@@ -34,15 +34,15 @@
 	flex-direction: column;
 	align-items: center;
 	width: 100%;
-	max-width: 1040px;
+	max-width: 760px;
 }
 
 .agentSessionsWelcome-header h1.product-name {
-	font-size: clamp(32px, 4.2vw, 52px);
+	font-size: clamp(28px, 3.4vw, 44px);
 	font-weight: 450;
-	letter-spacing: -0.04em;
-	line-height: 1.08;
-	margin: 0 0 32px 0;
+	letter-spacing: -0.035em;
+	line-height: 1.1;
+	margin: 0 0 24px 0;
 	color: var(--vscode-foreground);
 	text-align: center;
 }
@@ -82,7 +82,7 @@
 /* Chat widget section */
 .agentSessionsWelcome-chatSection {
 	width: 100%;
-	max-width: 1040px;
+	max-width: 760px;
 	margin-top: 0;
 }
 
@@ -105,8 +105,8 @@
 /* Input part styling - match chat panel */
 .agentSessionsWelcome-chatWidget .interactive-input-part {
 	margin: 0;
-	padding: 0 0 14px 0;
-	border-radius: 28px;
+	padding: 0 0 12px 0;
+	border-radius: 20px;
 	background-color: color-mix(in srgb, var(--vscode-editor-background) 96%, var(--vscode-foreground) 4%);
 	box-shadow: 0 22px 60px color-mix(in srgb, var(--vscode-widget-shadow, #000) 14%, transparent), 0 2px 10px color-mix(in srgb, var(--vscode-widget-shadow, #000) 8%, transparent);
 	overflow: hidden;
@@ -117,9 +117,9 @@
 }
 
 .monaco-workbench .agentSessionsWelcome-chatWidget .interactive-session .chat-input-container {
-	min-height: 172px;
-	padding: 16px 18px 14px 18px;
-	border-radius: 28px;
+	min-height: 132px;
+	padding: 10px 14px 10px 14px;
+	border-radius: 20px;
 	border-color: color-mix(in srgb, var(--vscode-input-border, var(--vscode-foreground)) 42%, transparent);
 	background-color: transparent;
 	box-shadow: none;
@@ -140,14 +140,14 @@
 }
 
 .agentSessionsWelcome-chatWidget .interactive-input-part:not(.compact) .chat-editor-container .monaco-editor [class^="ced-chat-session-detail"] {
-	font-size: 20px;
+	font-size: 16px;
 	color: color-mix(in srgb, var(--vscode-input-placeholderForeground) 86%, transparent);
 }
 
 .agentSessionsWelcome-chatWidget .chat-input-toolbars {
 	align-items: center;
-	gap: 10px;
-	margin-top: 14px;
+	gap: 8px;
+	margin-top: 10px;
 }
 
 .agentSessionsWelcome-chatWidget .chat-input-toolbars > .chat-input-toolbar,
@@ -161,14 +161,14 @@
 }
 
 .agentSessionsWelcome-chatWidget .chat-input-toolbar .action-item:has(.codicon-add) .action-label {
-	width: 34px;
-	height: 34px;
+	width: 28px;
+	height: 28px;
 	border-radius: 999px;
 	background-color: color-mix(in srgb, var(--vscode-foreground) 7%, transparent);
 }
 
 .agentSessionsWelcome-chatWidget .chat-input-toolbar .action-item:has(.codicon-add) .codicon-add {
-	font-size: 20px;
+	font-size: 17px;
 }
 
 .agentSessionsWelcome-chatWidget .chat-input-toolbar .chat-input-picker-item .action-label,
@@ -187,9 +187,9 @@
 }
 
 .agentSessionsWelcome-chatWidget .chat-input-toolbars > .chat-execute-toolbar .monaco-action-bar .action-item:has(> .action-label.codicon-arrow-up) > .action-label.codicon-arrow-up {
-	width: 40px;
-	height: 40px;
-	font-size: 18px;
+	width: 32px;
+	height: 32px;
+	font-size: 16px;
 }
 
 .agentSessionsWelcome-chatWidget .chat-input-toolbars > .chat-execute-toolbar .monaco-action-bar .action-item.disabled > .action-label.codicon-arrow-up {
@@ -198,14 +198,14 @@
 }
 
 .agentSessionsWelcome-chatWidget .chat-secondary-toolbar {
-	padding: 4px 18px 0 18px;
+	padding: 4px 14px 0 14px;
 }
 
 /* Suggested prompts */
 .agentSessionsWelcome-sessionsSection {
 	width: 100%;
-	max-width: 1040px;
-	margin-top: 28px;
+	max-width: 760px;
+	margin-top: 24px;
 }
 
 .agentSessionsWelcome-suggestedPrompts {
