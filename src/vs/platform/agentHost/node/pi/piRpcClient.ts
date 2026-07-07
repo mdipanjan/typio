@@ -3,34 +3,21 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { spawn } from 'child_process';
+import { RpcClient as PiPackageRpcClient, getPackageDir } from '@earendil-works/pi-coding-agent';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { join } from '../../../../base/common/path.js';
 
 export type PiRpcJsonValue = null | boolean | number | string | readonly PiRpcJsonValue[] | { readonly [key: string]: PiRpcJsonValue };
 export type PiRpcObject = { readonly [key: string]: PiRpcJsonValue | undefined };
 export type PiRpcMessage = PiRpcObject & { readonly type: string };
 
-export interface IPiRpcProcess {
-	readonly stdin: NodeJS.WritableStream;
-	readonly stdout: NodeJS.ReadableStream;
-	readonly stderr: NodeJS.ReadableStream;
-	readonly pid?: number;
-	on(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
-	on(event: 'error', listener: (error: Error) => void): this;
-	kill(signal?: NodeJS.Signals | number): boolean;
-}
-
 export interface IPiRpcSpawnOptions {
+	/** Path to Pi's CLI entry point. Defaults to the bundled @earendil-works/pi-coding-agent CLI. */
 	readonly executable?: string;
 	readonly cwd?: string;
 	readonly extraArgs?: readonly string[];
 	readonly env?: NodeJS.ProcessEnv;
-}
-
-interface IPendingRequest {
-	readonly resolve: (value: PiRpcMessage) => void;
-	readonly reject: (error: Error) => void;
 }
 
 export class PiRpcProtocolError extends Error {
@@ -67,13 +54,21 @@ export class PiJsonlStreamParser {
 	}
 }
 
+interface IPiPackageRpcClient {
+	start(): Promise<void>;
+	stop(): Promise<void>;
+	onEvent(listener: (event: unknown) => void): () => void;
+	getStderr(): string;
+	send(command: PiRpcObject): Promise<PiRpcMessage>;
+	process?: { readonly pid?: number; once(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): void } | null;
+}
+
 export class PiRpcClient extends Disposable {
-	private readonly _parser = new PiJsonlStreamParser();
-	private readonly _pending = new Map<string, IPendingRequest>();
-	private readonly _process: IPiRpcProcess;
-	private _nextRequestId = 1;
-	private _stderr = '';
+	private readonly _client: IPiPackageRpcClient;
+	private _started: Promise<void> | undefined;
 	private _disposed = false;
+	private _unsubscribeEvents: (() => void) | undefined;
+	private _didAttachExit = false;
 
 	private readonly _onDidEvent = this._register(new Emitter<PiRpcMessage>());
 	readonly onDidEvent: Event<PiRpcMessage> = this._onDidEvent.event;
@@ -82,116 +77,78 @@ export class PiRpcClient extends Disposable {
 	readonly onDidExit: Event<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }> = this._onDidExit.event;
 
 	static spawn(options: IPiRpcSpawnOptions = {}): PiRpcClient {
-		const executable = options.executable || 'pi';
-		const child = spawn(executable, ['--mode', 'rpc', ...(options.extraArgs ?? [])], {
+		const cliPath = options.executable || join(getPackageDir(), 'dist', 'cli.js');
+		const client = new PiPackageRpcClient({
+			cliPath,
 			cwd: options.cwd,
-			env: options.env ?? process.env,
-			stdio: 'pipe',
+			env: options.env as Record<string, string> | undefined,
+			args: options.extraArgs ? [...options.extraArgs] : undefined,
 		});
-		return new PiRpcClient(child);
+		return new PiRpcClient(client as unknown as IPiPackageRpcClient);
 	}
 
-	constructor(process: IPiRpcProcess) {
+	constructor(client: IPiPackageRpcClient) {
 		super();
-		this._process = process;
-		this._process.stdout.on('data', chunk => this._acceptStdout(chunk));
-		this._process.stderr.on('data', chunk => this._acceptStderr(chunk));
-		this._process.on('exit', (code, signal) => this._handleExit(code, signal));
-		this._process.on('error', error => this._rejectAll(error));
+		this._client = client;
 	}
 
 	get pid(): number | undefined {
-		return this._process.pid;
+		return this._client.process?.pid;
 	}
 
 	get stderr(): string {
-		return this._stderr;
+		return this._client.getStderr();
 	}
 
-	request(type: string, payload: PiRpcObject = {}): Promise<PiRpcMessage> {
+	async request(type: string, payload: PiRpcObject = {}): Promise<PiRpcMessage> {
 		if (this._disposed) {
-			return Promise.reject(new Error('Pi RPC client has been disposed.'));
+			throw new Error('Pi RPC client has been disposed.');
 		}
-		const id = `typio-${this._nextRequestId++}`;
-		const message = { ...payload, id, type };
-		return new Promise<PiRpcMessage>((resolve, reject) => {
-			this._pending.set(id, { resolve, reject });
-			this._write(message, error => {
-				if (!error) {
-					return;
-				}
-				this._pending.delete(id);
-				reject(error);
-			});
-		});
+		await this._ensureStarted();
+		const response = await this._client.send({ ...payload, type });
+		if (response.success === false) {
+			throw new Error(getFailureMessage(response));
+		}
+		return response;
 	}
 
 	send(type: string, payload: PiRpcObject = {}): void {
-		this._write({ ...payload, type }, error => {
-			if (error) {
-				this._rejectAll(error);
-			}
-		});
+		void this.request(type, payload).catch(() => undefined);
 	}
 
 	override dispose(): void {
 		this._disposed = true;
-		this._rejectAll(new Error('Pi RPC client disposed.'));
-		this._process.kill();
+		this._unsubscribeEvents?.();
+		this._unsubscribeEvents = undefined;
+		void this._client.stop();
 		super.dispose();
 	}
 
-	private _write(message: PiRpcObject, callback: (error?: Error | null) => void): void {
-		this._process.stdin.write(`${JSON.stringify(message)}\n`, callback);
+	private async _ensureStarted(): Promise<void> {
+		this._started ??= this._start();
+		return this._started;
 	}
 
-	private _acceptStdout(chunk: Buffer | string): void {
-		let messages: PiRpcMessage[];
-		try {
-			messages = this._parser.accept(chunk);
-		} catch (error) {
-			this._rejectAll(error instanceof Error ? error : new Error(String(error)));
+	private async _start(): Promise<void> {
+		this._unsubscribeEvents = this._client.onEvent(event => {
+			if (isPiRpcObject(event) && typeof event.type === 'string') {
+				this._onDidEvent.fire(event as PiRpcMessage);
+			}
+		});
+		await this._client.start();
+		this._attachExitListener();
+	}
+
+	private _attachExitListener(): void {
+		if (this._didAttachExit) {
 			return;
 		}
-		for (const message of messages) {
-			this._handleMessage(message);
-		}
-	}
-
-	private _acceptStderr(chunk: Buffer | string): void {
-		this._stderr += chunk.toString();
-		if (this._stderr.length > 20_000) {
-			this._stderr = this._stderr.slice(-20_000);
-		}
-	}
-
-	private _handleMessage(message: PiRpcMessage): void {
-		if (message.type === 'response' && typeof message.id === 'string') {
-			const pending = this._pending.get(message.id);
-			if (!pending) {
-				return;
-			}
-			this._pending.delete(message.id);
-			if (message.success === false) {
-				pending.reject(new Error(getFailureMessage(message)));
-				return;
-			}
-			pending.resolve(message);
+		const process = this._client.process;
+		if (!process) {
 			return;
 		}
-		this._onDidEvent.fire(message);
-	}
-
-	private _handleExit(code: number | null, signal: NodeJS.Signals | null): void {
-		this._onDidExit.fire({ code, signal });
-		this._rejectAll(new Error(`Pi RPC process exited${code === null ? '' : ` with code ${code}`}${signal ? ` and signal ${signal}` : ''}.`));
-	}
-
-	private _rejectAll(error: Error): void {
-		for (const pending of this._pending.values()) {
-			pending.reject(error);
-		}
-		this._pending.clear();
+		this._didAttachExit = true;
+		process.once('exit', (code, signal) => this._onDidExit.fire({ code, signal }));
 	}
 }
 

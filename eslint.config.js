@@ -1681,6 +1681,7 @@ export default defineConfig(
 						'@vscode/copilot-api', // used by agentHost for Copilot API requests
 						'@anthropic-ai/sdk', // used by agentHost for Anthropic API requests
 						'@anthropic-ai/claude-agent-sdk', // used by agentHost for Claude Agent SDK session enumeration / queries
+						'@earendil-works/pi-coding-agent', // used by agentHost for bundled Pi RPC runtime
 						'@modelcontextprotocol/sdk/**/*', // used by agentHost for Claude client-tool MCP result types (Phase 10)
 						'@github/copilot-sdk',
 						'zod' // used by agentHost for Claude client-tool MCP input schemas

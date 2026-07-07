@@ -5,32 +5,53 @@
 
 import * as assert from 'assert';
 import { EventEmitter } from 'events';
-import { PassThrough } from 'stream';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
-import { PiJsonlStreamParser, PiRpcClient, type IPiRpcProcess } from '../../node/pi/piRpcClient.js';
+import { PiJsonlStreamParser, PiRpcClient, type PiRpcMessage, type PiRpcObject } from '../../node/pi/piRpcClient.js';
 
-class FakePiRpcProcess extends EventEmitter implements IPiRpcProcess {
-	readonly stdin = new PassThrough();
-	readonly stdout = new PassThrough();
-	readonly stderr = new PassThrough();
-	readonly pid = 1234;
-	killed = false;
-	stdinText = '';
+class FakePiPackageRpcClient {
+	readonly process = new EventEmitter() as EventEmitter & { pid?: number; once(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): EventEmitter };
+	readonly commands: PiRpcObject[] = [];
+	readonly listeners: ((event: unknown) => void)[] = [];
+	stderr = '';
+	started = false;
+	stopped = false;
+	response: PiRpcMessage = { type: 'response', success: true, data: {} };
 
 	constructor() {
-		super();
-		this.stdin.on('data', chunk => this.stdinText += chunk.toString());
+		this.process.pid = 1234;
 	}
 
-	override on(event: 'exit', listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
-	override on(event: 'error', listener: (error: Error) => void): this;
-	override on(event: string | symbol, listener: (...args: any[]) => void): this {
-		return super.on(event, listener);
+	async start(): Promise<void> {
+		this.started = true;
 	}
 
-	kill(_signal?: NodeJS.Signals | number): boolean {
-		this.killed = true;
-		return true;
+	async stop(): Promise<void> {
+		this.stopped = true;
+	}
+
+	onEvent(listener: (event: unknown) => void): () => void {
+		this.listeners.push(listener);
+		return () => {
+			const index = this.listeners.indexOf(listener);
+			if (index >= 0) {
+				this.listeners.splice(index, 1);
+			}
+		};
+	}
+
+	getStderr(): string {
+		return this.stderr;
+	}
+
+	async send(command: PiRpcObject): Promise<PiRpcMessage> {
+		this.commands.push(command);
+		return this.response;
+	}
+
+	fire(event: unknown): void {
+		for (const listener of this.listeners) {
+			listener(event);
+		}
 	}
 }
 
@@ -75,34 +96,33 @@ suite('PiRpcClient', () => {
 
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('correlates command responses by id', async () => {
-		const process = new FakePiRpcProcess();
-		const client = new PiRpcClient(process);
+	test('starts bundled client lazily and forwards command responses', async () => {
+		const packageClient = new FakePiPackageRpcClient();
+		packageClient.response = { type: 'response', command: 'get_state', success: true, data: { sessionId: 'abc' } };
+		const client = new PiRpcClient(packageClient);
 		try {
-			const responsePromise = client.request('get_state');
-			const command = JSON.parse(process.stdinText.trim());
+			const response = await client.request('get_state');
 
-			assert.strictEqual(command.type, 'get_state');
-			assert.strictEqual(command.id, 'typio-1');
-
-			process.stdout.write('{"type":"response","id":"typio-1","command":"get_state","success":true,"data":{"sessionId":"abc"}}\n');
-			const response = await responsePromise;
-
+			assert.strictEqual(packageClient.started, true);
+			assert.deepStrictEqual(packageClient.commands, [{ type: 'get_state' }]);
 			assert.strictEqual(response.type, 'response');
-			assert.strictEqual(response.id, 'typio-1');
+			assert.deepStrictEqual(response.data, { sessionId: 'abc' });
 		} finally {
 			client.dispose();
 		}
 	});
 
-	test('emits non-response events', async () => {
-		const process = new FakePiRpcProcess();
-		const client = new PiRpcClient(process);
+	test('emits package rpc events', async () => {
+		const packageClient = new FakePiPackageRpcClient();
+		const client = new PiRpcClient(packageClient);
 		try {
-			const eventPromise = new Promise(resolve => client.onDidEvent(resolve));
+			await client.request('get_state');
+			let disposable: { dispose(): void } | undefined;
+			const eventPromise = new Promise(resolve => disposable = client.onDidEvent(resolve));
 
-			process.stdout.write('{"type":"agent_start"}\n');
+			packageClient.fire({ type: 'agent_start' });
 			const event = await eventPromise;
+			disposable?.dispose();
 
 			assert.deepStrictEqual(event, { type: 'agent_start' });
 		} finally {
@@ -111,25 +131,21 @@ suite('PiRpcClient', () => {
 	});
 
 	test('rejects failed command responses', async () => {
-		const process = new FakePiRpcProcess();
-		const client = new PiRpcClient(process);
+		const packageClient = new FakePiPackageRpcClient();
+		packageClient.response = { type: 'response', command: 'prompt', success: false, error: 'not logged in' };
+		const client = new PiRpcClient(packageClient);
 		try {
-			const responsePromise = client.request('prompt', { message: 'hello' });
-
-			process.stdout.write('{"type":"response","id":"typio-1","command":"prompt","success":false,"error":"not logged in"}\n');
-
-			await assert.rejects(responsePromise, /not logged in/);
+			await assert.rejects(client.request('prompt', { message: 'hello' }), /not logged in/);
 		} finally {
 			client.dispose();
 		}
 	});
 
-	test('keeps recent stderr for diagnostics', () => {
-		const process = new FakePiRpcProcess();
-		const client = new PiRpcClient(process);
+	test('exposes stderr diagnostics from package rpc client', () => {
+		const packageClient = new FakePiPackageRpcClient();
+		packageClient.stderr = 'Pi failed to start';
+		const client = new PiRpcClient(packageClient);
 		try {
-			process.stderr.write('Pi failed to start');
-
 			assert.strictEqual(client.stderr, 'Pi failed to start');
 		} finally {
 			client.dispose();
