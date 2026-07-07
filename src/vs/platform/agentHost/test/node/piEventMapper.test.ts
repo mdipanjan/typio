@@ -39,6 +39,39 @@ suite('piEventMapper', () => {
 		assert.strictEqual(actions[1].content, 'Hi');
 	});
 
+	test('maps tool execution lifecycle', () => {
+		const state: IPiTurnMapState = { turnId: 'turn-1', prompt: 'hello', toolCalls: new Map() };
+
+		const startActions = mapPiRpcEventToActions(state, {
+			type: 'tool_execution_start',
+			toolCallId: 'tool-1',
+			toolName: 'bash',
+			args: { command: 'pwd' },
+		});
+		assert.deepStrictEqual(startActions.map(action => action.type), [
+			ActionType.ChatToolCallStart,
+			ActionType.ChatToolCallReady,
+		]);
+
+		const updateActions = mapPiRpcEventToActions(state, {
+			type: 'tool_execution_update',
+			toolCallId: 'tool-1',
+			partialResult: { content: [{ type: 'text', text: '/repo' }] },
+		});
+		assert.strictEqual(updateActions[0].type, ActionType.ChatToolCallContentChanged);
+		assert.deepStrictEqual(updateActions[0].content, [{ type: 'text', text: '/repo' }]);
+
+		const endActions = mapPiRpcEventToActions(state, {
+			type: 'tool_execution_end',
+			toolCallId: 'tool-1',
+			result: { content: [{ type: 'text', text: '/repo' }] },
+			isError: false,
+		});
+		assert.strictEqual(endActions[0].type, ActionType.ChatToolCallComplete);
+		assert.strictEqual(endActions[0].result.success, true);
+		assert.deepStrictEqual(endActions[0].result.content, [{ type: 'text', text: '/repo' }]);
+	});
+
 	test('maps completion once', () => {
 		const state: IPiTurnMapState = { turnId: 'turn-1', prompt: 'hello' };
 

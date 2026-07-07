@@ -82,7 +82,7 @@ export class PiAgent extends Disposable implements IAgent {
 		sendMessage: async (chat: URI, prompt: string, _attachments?: readonly MessageAttachment[], turnId?: string, _senderClientId?: string): Promise<void> => {
 			const record = this._getRecordForChat(chat);
 			record.modifiedTime = Date.now();
-			const state: IPiTurnMapState = { turnId: turnId ?? generateUuid(), prompt };
+			const state: IPiTurnMapState = { turnId: turnId ?? generateUuid(), prompt, toolCalls: new Map() };
 			record.activeTurn = { chat, state };
 			this._fireChatAction(chat, startPiTurn(state.turnId, prompt));
 			try {
