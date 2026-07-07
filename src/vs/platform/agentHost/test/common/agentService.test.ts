@@ -7,7 +7,7 @@ import assert from 'assert';
 import { URI } from '../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { IConfigurationService } from '../../../configuration/common/configuration.js';
-import { AgentHostByokModelsEnabledEnvVar, AgentSession, AgentHostOTelEnvVars, buildAgentHostOTelEnv, buildAgentSdkEnv, isAgentEnabled, readAgentHostOTelPolicySettings, sanitizeAgentHostOTelPolicySettings } from '../../common/agentService.js';
+import { AgentHostByokModelsEnabledEnvVar, AgentHostPiAgentEnabledEnvVar, AgentSession, AgentHostOTelEnvVars, buildAgentHostOTelEnv, buildAgentSdkEnv, isAgentEnabled, readAgentHostOTelPolicySettings, sanitizeAgentHostOTelPolicySettings } from '../../common/agentService.js';
 import { buildChatUri, buildDefaultChatUri, resolveChatUri } from '../../common/state/sessionState.js';
 
 suite('AgentSession namespace', () => {
@@ -278,8 +278,14 @@ suite('buildAgentSdkEnv (BYOK gate forwarding)', () => {
 		assert.strictEqual(env[AgentHostByokModelsEnabledEnvVar], undefined);
 	});
 
+	test('forwards piAgentEnabled as the Pi provider env var', () => {
+		const env = buildAgentSdkEnv({ piAgentEnabled: true }, {});
+		assert.strictEqual(env[AgentHostPiAgentEnabledEnvVar], 'true');
+	});
+
 	test('lets an inherited env var win over the setting (developer override)', () => {
-		const env = buildAgentSdkEnv({ byokModelsEnabled: true }, { [AgentHostByokModelsEnabledEnvVar]: 'false' });
+		const env = buildAgentSdkEnv({ byokModelsEnabled: true, piAgentEnabled: true }, { [AgentHostByokModelsEnabledEnvVar]: 'false', [AgentHostPiAgentEnabledEnvVar]: 'false' });
 		assert.strictEqual(env[AgentHostByokModelsEnabledEnvVar], undefined);
+		assert.strictEqual(env[AgentHostPiAgentEnabledEnvVar], undefined);
 	});
 });

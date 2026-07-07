@@ -15,6 +15,7 @@ import {
 	AgentHostClaudeAgentEnabledSettingId,
 	AgentHostCodexAgentBinaryArgsSettingId,
 	AgentHostCodexAgentEnabledSettingId,
+	AgentHostPiAgentEnabledSettingId,
 	AgentHostCodexAgentSdkRootSettingId,
 	AgentHostCodexAgentCodexHomeSettingId,
 	AgentHostOTelCaptureContentSettingId,
@@ -135,6 +136,12 @@ configurationRegistry.registerConfiguration({
 					}
 				}
 			},
+		},
+		[AgentHostPiAgentEnabledSettingId]: {
+			type: 'boolean',
+			description: nls.localize('chat.agentHost.piAgent.enabled', "When enabled, the agent host registers the Pi Agent provider. Pi runs locally and uses the user's existing Pi login/provider configuration. Requires `#chat.agentHost.enabled#`. The agent host process must be restarted for changes to take effect."),
+			default: true,
+			tags: ['experimental', 'advanced'],
 		},
 		[AgentHostCodexAgentSdkRootSettingId]: {
 			type: 'string',
