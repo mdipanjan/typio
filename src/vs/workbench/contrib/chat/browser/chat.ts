@@ -373,6 +373,14 @@ export interface IChatWidgetViewModelChangeEvent {
 	readonly currentSessionResource: URI | undefined;
 }
 
+export interface IChatWidgetScrollMetrics {
+	readonly scrollTop: number;
+	readonly scrollHeight: number;
+	readonly renderHeight: number;
+	readonly contentHeight: number;
+	readonly hasOverflow: boolean;
+}
+
 export interface IChatWidget {
 	readonly domNode: HTMLElement;
 	readonly onDidChangeViewModel: Event<IChatWidgetViewModelChangeEvent>;
@@ -384,6 +392,8 @@ export interface IChatWidget {
 	readonly onDidChangeParsedInput: Event<void>;
 	readonly onDidChangeActiveInputEditor: Event<void>;
 	readonly onDidFocus: Event<void>;
+	readonly onDidScroll: Event<void>;
+	readonly onDidChangeContentHeight: Event<void>;
 	readonly location: ChatAgentLocation;
 	readonly viewContext: IChatWidgetViewContext;
 	readonly viewModel: IChatViewModel | undefined;
@@ -478,6 +488,8 @@ export interface IChatWidget {
 	handleDelegationExitIfNeeded(sourceAgent: Pick<IChatAgentData, 'id' | 'name'> | undefined, targetAgent: IChatAgentData | undefined): Promise<void>;
 	executeHandoff(handoff: IHandOff, agentId?: string): Promise<void>;
 
+	getScrollMetrics(): IChatWidgetScrollMetrics;
+	setScrollTop(scrollTop: number): void;
 	delegateScrollFromMouseWheelEvent(event: IMouseWheelEvent): void;
 }
 
