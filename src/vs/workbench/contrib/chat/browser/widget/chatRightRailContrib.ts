@@ -13,6 +13,8 @@ import { IChatWidgetContrib } from './chatWidget.js';
 const MIN_RAIL_WIDGET_WIDTH = 520;
 const MIN_RAIL_HEIGHT = 80;
 const PAGE_SCROLL_FACTOR = 0.85;
+const RULER_TICK_STEP_PX = 14;
+const RULER_TICK_OFFSET_PX = 8;
 
 export interface IChatRightRailState {
 	readonly visible: boolean;
@@ -23,6 +25,11 @@ export interface IChatRightRailState {
 
 function clamp(value: number, min: number, max: number): number {
 	return Math.max(min, Math.min(max, value));
+}
+
+function snapToRulerTick(pixelTop: number, railHeight: number): number {
+	const snapped = Math.round((pixelTop - RULER_TICK_OFFSET_PX) / RULER_TICK_STEP_PX) * RULER_TICK_STEP_PX + RULER_TICK_OFFSET_PX;
+	return clamp(snapped, RULER_TICK_OFFSET_PX, Math.max(RULER_TICK_OFFSET_PX, railHeight - RULER_TICK_OFFSET_PX));
 }
 
 export function computeChatRightRailState(metrics: IChatWidgetScrollMetrics): IChatRightRailState {
@@ -52,9 +59,12 @@ export class ChatRightRailContrib extends Disposable implements IChatWidgetContr
 	private readonly thumb: HTMLButtonElement;
 	private readonly dragListeners = this._register(new DisposableStore());
 	private readonly markerListeners = this._register(new DisposableStore());
+	private readonly rulerTickListeners = this._register(new DisposableStore());
 	private readonly viewModelListeners = this._register(new DisposableStore());
 	private readonly markers: HTMLButtonElement[] = [];
+	private readonly rulerTicks: HTMLButtonElement[] = [];
 	private markerRenderSignature = '';
+	private rulerRenderSignature = '';
 	private animationFrame = 0;
 
 	constructor(private readonly widget: IChatWidget) {
@@ -146,8 +156,9 @@ export class ChatRightRailContrib extends Disposable implements IChatWidgetContr
 		this.thumb.style.height = `${state.thumbHeight}%`;
 		this.thumb.setAttribute('aria-hidden', 'false');
 		this.thumb.setAttribute('aria-valuenow', String(state.scrollPercent));
+		this.renderRulerTicks(metrics);
 		this.renderMarkers(metrics);
-		this.updateActiveMarker(metrics);
+		this.updateActiveRailTick(metrics);
 	}
 
 	private clearMarkers(): void {
@@ -158,17 +169,55 @@ export class ChatRightRailContrib extends Disposable implements IChatWidgetContr
 		this.markers.length = 0;
 	}
 
+	private clearRulerTicks(): void {
+		this.rulerTickListeners.clear();
+		for (const tick of this.rulerTicks) {
+			tick.remove();
+		}
+		this.rulerTicks.length = 0;
+	}
+
+	private renderRulerTicks(metrics: IChatWidgetScrollMetrics): void {
+		const railHeight = this.rail.clientHeight || metrics.renderHeight;
+		const maxScrollTop = Math.max(0, metrics.scrollHeight - metrics.renderHeight);
+		const signature = `${Math.round(railHeight)}@${Math.round(metrics.scrollHeight)}@${Math.round(metrics.renderHeight)}`;
+		if (signature === this.rulerRenderSignature) {
+			return;
+		}
+		this.rulerRenderSignature = signature;
+		this.clearRulerTicks();
+
+		for (let top = RULER_TICK_OFFSET_PX; top <= railHeight - RULER_TICK_OFFSET_PX; top += RULER_TICK_STEP_PX) {
+			const tick = dom.append(this.track, dom.$('button.chat-right-rail-ruler-tick')) as HTMLButtonElement;
+			const fraction = railHeight <= RULER_TICK_OFFSET_PX * 2 ? 0 : (top - RULER_TICK_OFFSET_PX) / (railHeight - RULER_TICK_OFFSET_PX * 2);
+			tick.type = 'button';
+			tick.style.top = `${top}px`;
+			tick.dataset.rulerTop = String(top);
+			tick.dataset.scrollTop = String(fraction * maxScrollTop);
+			tick.setAttribute('aria-label', `Scroll chat to ${Math.round(fraction * 100)}%`);
+			this.rulerTicks.push(tick);
+			this.rulerTickListeners.add(dom.addDisposableListener(tick, dom.EventType.CLICK, event => {
+				event.preventDefault();
+				event.stopPropagation();
+				this.setScrollTop(fraction * maxScrollTop);
+			}));
+		}
+	}
+
 	private renderMarkers(metrics: IChatWidgetScrollMetrics): void {
 		const viewModel = this.widget.viewModel;
 		if (!viewModel || metrics.scrollHeight <= 0) {
 			this.markerRenderSignature = '';
+			this.rulerRenderSignature = '';
 			this.clearMarkers();
+			this.clearRulerTicks();
 			return;
 		}
 
 		const items = viewModel.getItems();
 		const requestIds = items.filter(isRequestVM).map(item => item.id).join('|');
-		const signature = `${viewModel.sessionResource.toString()}@${Math.round(metrics.scrollHeight)}@${Math.round(metrics.contentHeight)}@${items.length}@${requestIds}`;
+		const railHeight = this.rail.clientHeight || metrics.renderHeight;
+		const signature = `${viewModel.sessionResource.toString()}@${Math.round(metrics.scrollHeight)}@${Math.round(metrics.contentHeight)}@${Math.round(railHeight)}@${items.length}@${requestIds}`;
 		if (signature === this.markerRenderSignature) {
 			return;
 		}
@@ -185,7 +234,9 @@ export class ChatRightRailContrib extends Disposable implements IChatWidgetContr
 				const label = item.messageText.trim().replace(/\s+/g, ' ');
 				const shortLabel = label.length > 96 ? `${label.slice(0, 95)}…` : label;
 				marker.type = 'button';
-				marker.style.top = `${clamp((markerScrollTop / metrics.scrollHeight) * 100, 0, 100)}%`;
+				const markerTop = snapToRulerTick((markerScrollTop / metrics.scrollHeight) * railHeight, railHeight);
+				marker.style.top = `${markerTop}px`;
+				marker.dataset.rulerTop = String(markerTop);
 				marker.dataset.scrollTop = String(markerScrollTop);
 				marker.title = shortLabel;
 				marker.setAttribute('aria-label', `Scroll to message: ${shortLabel}`);
@@ -201,29 +252,36 @@ export class ChatRightRailContrib extends Disposable implements IChatWidgetContr
 		}
 	}
 
-	private updateActiveMarker(metrics: IChatWidgetScrollMetrics): void {
-		if (this.markers.length === 0) {
+	private updateActiveRailTick(metrics: IChatWidgetScrollMetrics): void {
+		if (this.rulerTicks.length === 0) {
 			return;
 		}
 
-		const viewportAnchor = metrics.scrollTop + metrics.renderHeight * 0.35;
-		let activeMarker: HTMLElement | undefined;
+		// The active colour belongs to the ruler grid, not only to semantic/user
+		// markers. This keeps the selection moving continuously through every ruler
+		// index and prevents clicks on minor ticks from visually snapping to the
+		// nearest user-message marker.
+		let activeTick: HTMLButtonElement | undefined;
 		let activeDistance = Number.POSITIVE_INFINITY;
-		for (const marker of this.markers) {
-			const markerScrollTop = Number(marker.dataset.scrollTop);
-			if (!Number.isFinite(markerScrollTop)) {
+		for (const tick of this.rulerTicks) {
+			const tickScrollTop = Number(tick.dataset.scrollTop);
+			if (!Number.isFinite(tickScrollTop)) {
 				continue;
 			}
 
-			const distance = Math.abs(markerScrollTop - viewportAnchor);
+			const distance = Math.abs(tickScrollTop - metrics.scrollTop);
 			if (distance < activeDistance) {
 				activeDistance = distance;
-				activeMarker = marker;
+				activeTick = tick;
 			}
 		}
 
+		const activeRulerTop = activeTick?.dataset.rulerTop;
+		for (const tick of this.rulerTicks) {
+			tick.classList.toggle('chat-right-rail-ruler-tick-active', tick === activeTick);
+		}
 		for (const marker of this.markers) {
-			marker.classList.toggle('chat-right-rail-marker-active', marker === activeMarker);
+			marker.classList.toggle('chat-right-rail-marker-active', marker.dataset.rulerTop === activeRulerTop);
 		}
 	}
 

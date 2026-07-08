@@ -489,58 +489,85 @@
 	width: 34px;
 }
 
+.agent-sessions-workbench .part.sessionspart .interactive-session .chat-right-rail::before,
+.agent-sessions-workbench .chat-editor-relative .interactive-session .chat-right-rail::before {
+	content: none;
+}
+
 .agent-sessions-workbench .part.sessionspart .interactive-session .chat-right-rail-track,
 .agent-sessions-workbench .chat-editor-relative .interactive-session .chat-right-rail-track {
 	position: absolute;
-	inset: 0 auto 0 50%;
-	width: 1px;
-	transform: translateX(-50%);
-	background: var(--vscode-widget-border, color-mix(in srgb, var(--vscode-foreground) 10%, transparent));
+	inset: 0;
+	width: auto;
+	transform: none;
+	/* The subtle tick scale is drawn by .chat-right-rail::before. Keep the
+	 * track transparent so we don't render a second ruler beside it. */
+	background: transparent;
 }
 
 .agent-sessions-workbench .part.sessionspart .interactive-session .chat-right-rail-thumb,
 .agent-sessions-workbench .chat-editor-relative .interactive-session .chat-right-rail-thumb {
-	left: 0;
-	width: 7px;
-	min-height: 18px;
-	transform: translateX(-1px);
-	border-left: 2px solid color-mix(in srgb, var(--vscode-focusBorder) 70%, transparent);
-	border-radius: 0 999px 999px 0;
-	background: color-mix(in srgb, var(--vscode-focusBorder) 9%, transparent);
-	box-shadow: none;
-	cursor: ns-resize;
+	/* Sessions uses the ruler itself plus enlarged request ticks. A separate
+	 * moving scrollbar thumb creates a second visual system and makes the rail
+	 * look like two rulers. */
+	display: none;
 }
 
+.interactive-session .chat-right-rail-ruler-tick,
 .interactive-session .chat-right-rail-marker {
 	position: absolute;
 	right: 0;
-	height: 18px;
+	height: 12px;
 	min-width: 34px;
 	transform: translateY(-50%);
 	border: 0;
 	padding: 0;
 	background: transparent;
-	color: var(--vscode-focusBorder);
 	cursor: pointer;
 	pointer-events: auto;
+}
+
+.interactive-session .chat-right-rail-marker {
+	color: var(--vscode-focusBorder);
+	z-index: 1;
+}
+
+.interactive-session .chat-right-rail-ruler-tick::after {
+	content: '';
+	position: absolute;
+	right: 0;
+	top: 50%;
+	width: 14px;
+	height: 1px;
+	transform: translateY(-50%);
+	background: color-mix(in srgb, var(--vscode-foreground) 13%, transparent);
+}
+
+.interactive-session .chat-right-rail-ruler-tick.chat-right-rail-ruler-tick-active::after,
+.interactive-session .chat-right-rail-ruler-tick:hover::after,
+.interactive-session .chat-right-rail-ruler-tick:focus-visible::after {
+	width: 30px;
+	height: 2px;
+	background: var(--vscode-focusBorder);
 }
 
 .interactive-session .chat-right-rail-marker::after {
 	content: '';
 	position: absolute;
-	left: 50%;
+	right: 0;
 	top: 50%;
-	width: 18px;
-	height: 2px;
+	width: 14px;
+	height: 1px;
 	transform: translateY(-50%);
 	border-radius: 999px;
-	background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+	background: color-mix(in srgb, var(--vscode-foreground) 26%, transparent);
 }
 
 .interactive-session .chat-right-rail-marker.chat-right-rail-marker-active::after,
 .interactive-session .chat-right-rail-marker:hover::after,
 .interactive-session .chat-right-rail-marker:focus-visible::after {
-	width: 24px;
+	width: 30px;
+	height: 2px;
 	background: var(--vscode-focusBorder);
 }
 
@@ -552,12 +579,12 @@
 .interactive-session .chat-right-rail-marker::before {
 	content: attr(data-label);
 	position: absolute;
-	right: calc(50% + 25px);
+	right: 36px;
 	top: 50%;
 	max-width: 360px;
-	color: var(--vscode-focusBorder);
+	color: var(--vscode-foreground);
 	font-family: var(--monaco-monospace-font);
-	font-size: 11px;
+	font-size: 18px;
 	line-height: 1;
 	white-space: nowrap;
 	overflow: hidden;
