@@ -85,7 +85,7 @@ suite('PiAgent', () => {
 		}
 	});
 
-	test('creates and lists in-memory session metadata', async () => {
+	test('creates provisional sessions that stay hidden until first message', async () => {
 		const client = new FakePiSessionClient();
 		const agent = new PiAgent(() => client);
 		try {
@@ -96,12 +96,11 @@ suite('PiAgent', () => {
 			assert.strictEqual(result.session.scheme, PI_AGENT_PROVIDER_ID);
 			assert.strictEqual(AgentSession.provider(result.session), PI_AGENT_PROVIDER_ID);
 			assert.deepStrictEqual(result.workingDirectory, workingDirectory);
+			assert.strictEqual(result.provisional, true);
 
 			const sessions = await agent.listSessions();
-			assert.strictEqual(sessions.length, 1);
-			assert.deepStrictEqual(sessions[0].session, result.session);
-			assert.deepStrictEqual(sessions[0].workingDirectory, workingDirectory);
-			assert.strictEqual(sessions[0].summary, 'Pi Agent · typio-pi-project');
+			assert.strictEqual(sessions.length, 0);
+			assert.strictEqual(await agent.getSessionMetadata(result.session), undefined);
 		} finally {
 			agent.dispose();
 		}
@@ -113,8 +112,12 @@ suite('PiAgent', () => {
 		const agent = new PiAgent(() => client);
 		try {
 			const result = await agent.createSession({ workingDirectory: URI.file('/tmp/project') });
+			const chat = URI.parse(buildDefaultChatUri(result.session));
 
 			assert.strictEqual(AgentSession.id(result.session), 'pi-123');
+			assert.strictEqual(await agent.getSessionMetadata(result.session), undefined);
+
+			await agent.chats.sendMessage(chat, 'hello');
 			const metadata = await agent.getSessionMetadata(result.session);
 			assert.strictEqual(metadata?.summary, 'Implement feature');
 			assert.deepStrictEqual(metadata?._meta?.pi, { sessionId: 'pi-123', sessionFile: '/tmp/pi-session.jsonl', sessionName: 'Implement feature' });
@@ -130,6 +133,11 @@ suite('PiAgent', () => {
 		const agent = new PiAgent(() => client, store as unknown as PiSessionStore);
 		try {
 			const result = await agent.createSession({ workingDirectory: URI.file('/tmp/project') });
+			const chat = URI.parse(buildDefaultChatUri(result.session));
+
+			assert.strictEqual(store.writes.length, 0);
+
+			await agent.chats.sendMessage(chat, 'hello');
 
 			assert.strictEqual(store.writes.length, 1);
 			assert.deepStrictEqual(store.writes[0].session, result.session);
@@ -199,19 +207,25 @@ suite('PiAgent', () => {
 		}
 	});
 
-	test('sends prompts through the Pi RPC client', async () => {
+	test('sends prompts through the Pi RPC client and materializes the provisional session', async () => {
 		const client = new FakePiSessionClient();
 		const agent = new PiAgent(() => client);
 		try {
+			const materialized: unknown[] = [];
+			const disposable = agent.onDidMaterializeSession(event => materialized.push(event));
 			const { session } = await agent.createSession({ workingDirectory: URI.file('/tmp/project') });
 			const chat = URI.parse(buildDefaultChatUri(session));
 
 			await agent.chats.sendMessage(chat, 'hello');
 
+			disposable.dispose();
 			assert.deepStrictEqual(client.requests, [
 				{ type: 'get_state', payload: undefined },
 				{ type: 'prompt', payload: { message: 'hello' } },
 			]);
+			assert.strictEqual(materialized.length, 1);
+			assert.deepStrictEqual((materialized[0] as { session: URI }).session, session);
+			assert.strictEqual((await agent.listSessions()).length, 1);
 		} finally {
 			agent.dispose();
 		}
@@ -281,7 +295,7 @@ suite('PiAgent', () => {
 			assert.deepStrictEqual(client.requests, [
 				{ type: 'get_state', payload: undefined },
 				{ type: 'prompt', payload: { message: 'first' } },
-				{ type: 'prompt', payload: { message: 'second', streamingBehavior: 'followUp' } },
+				{ type: 'follow_up', payload: { message: 'second' } },
 			]);
 
 			client.fireEvent({ type: 'agent_end' });
@@ -322,12 +336,24 @@ suite('PiAgent', () => {
 		}
 	});
 
-	test('reports a helpful startup error when Pi is missing', async () => {
+	test('reports a helpful startup error when Node.js is missing for Pi RPC', async () => {
 		const client = new FakePiSessionClient();
-		client.requestError = Object.assign(new Error('spawn pi ENOENT'), { code: 'ENOENT' });
+		client.requestError = Object.assign(new Error('Agent process error: spawn node ENOENT'), { code: 'ENOENT' });
 		const agent = new PiAgent(() => client);
 		try {
-			await assert.rejects(agent.createSession({ workingDirectory: URI.file('/tmp/project') }), /Pi CLI was not found/);
+			await assert.rejects(agent.createSession({ workingDirectory: URI.file('/tmp/project') }), /Node\.js was not found/);
+			assert.strictEqual(client.disposed, true);
+		} finally {
+			agent.dispose();
+		}
+	});
+
+	test('reports a helpful startup error when Pi RPC entry point is missing', async () => {
+		const client = new FakePiSessionClient();
+		client.requestError = Object.assign(new Error('spawn /tmp/pi/dist/cli.js ENOENT'), { code: 'ENOENT' });
+		const agent = new PiAgent(() => client);
+		try {
+			await assert.rejects(agent.createSession({ workingDirectory: URI.file('/tmp/project') }), /Pi RPC entry point could not be launched/);
 			assert.strictEqual(client.disposed, true);
 		} finally {
 			agent.dispose();

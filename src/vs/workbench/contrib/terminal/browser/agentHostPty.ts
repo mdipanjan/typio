@@ -337,7 +337,7 @@ export class AgentHostPty extends BasePty implements ITerminalChildProcess {
 			this._subscriptionRef = undefined;
 			this._subscriptionDisposables.clear();
 			this.handleExit(undefined);
-		});
+		}).finally(() => this.dispose());
 	}
 
 	override async getInitialCwd(): Promise<string> {

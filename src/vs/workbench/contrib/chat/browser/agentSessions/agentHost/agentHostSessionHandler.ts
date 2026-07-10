@@ -1017,8 +1017,8 @@ export class AgentHostSessionHandler extends Disposable implements IChatSessionC
 		this._activeSessions.set(sessionResource, session);
 
 		if (!isNewSession) {
-			this._ensurePendingMessageSubscription(sessionResource, resolvedSession);
 			if (chatURI !== undefined) {
+				this._ensurePendingMessageSubscription(sessionResource, resolvedSession);
 				this._ensureDraftSyncSubscription(sessionResource, resolvedSession, chatURI);
 			}
 

@@ -331,6 +331,19 @@ suite('AgentHostPty', () => {
 		assert.ok(exitFired);
 	});
 
+	test('shutdown() releases AgentHostPty ownership without an external disposer', async () => {
+		const conn = new MockAgentConnection();
+		disposables.add(conn);
+		const pty = new AgentHostPty(1, conn, terminalUri);
+
+		await pty.start();
+		pty.shutdown(false);
+
+		await new Promise(resolve => setTimeout(resolve, 10));
+
+		assert.strictEqual(conn.disposedTerminals.length, 1);
+	});
+
 	test('shouldPersist is false', () => {
 		const conn = new MockAgentConnection();
 		disposables.add(conn);

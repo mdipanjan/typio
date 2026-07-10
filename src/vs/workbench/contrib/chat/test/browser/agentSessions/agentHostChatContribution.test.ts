@@ -6645,6 +6645,27 @@ suite('AgentHostChatContribution', () => {
 			};
 		}
 
+		test('does not install pending message sync when existing session chat channel fails to resolve', async () => {
+			const { sessionHandler, agentHostService, chatService } = createContribution(disposables);
+
+			const backendSession = AgentSession.uri('copilot', 'missing-chat-uri');
+			agentHostService.failNextSubscriptionFor.add(backendSession.toString());
+			const sessionResource = URI.from({ scheme: 'agent-host-copilot', path: '/missing-chat-uri' });
+			const chatSession = await sessionHandler.provideChatSessionContent(sessionResource, CancellationToken.None);
+			disposables.add(toDisposable(() => chatSession.dispose()));
+
+			const pendingRequests: IChatPendingRequest[] = [{
+				request: upcastPartial<IChatRequestModel>({ id: 'queued-request-1', message: { text: 'queued text', parts: [] } }),
+				kind: ChatRequestQueueKind.Queued,
+				sendOptions: {},
+			}];
+			const chatModel = createPendingChatModel(sessionResource, pendingRequests);
+
+			assert.doesNotThrow(() => chatService.setSession(sessionResource, chatModel.model));
+			assert.doesNotThrow(() => chatModel.firePendingRequestsChanged());
+			assert.strictEqual(agentHostService.dispatchedActions.some(d => d.action.type === ActionType.ChatPendingMessageSet), false);
+		});
+
 		test('syncs queued messages added to restored active sessions', async () => {
 			const { sessionHandler, agentHostService, chatService } = createContribution(disposables);
 

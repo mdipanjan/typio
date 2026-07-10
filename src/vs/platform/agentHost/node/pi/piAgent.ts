@@ -8,7 +8,7 @@ import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.j
 import { type IObservable, observableValue } from '../../../../base/common/observable.js';
 import { basename } from '../../../../base/common/path.js';
 import { URI } from '../../../../base/common/uri.js';
-import { AgentSession, type AgentProvider, type AgentSignal, type IActiveClient, type IAgent, type IAgentChats, type IAgentCreateChatForkSource, type IAgentCreateChatOptions, type IAgentCreateChatResult, type IAgentCreateSessionConfig, type IAgentCreateSessionResult, type IAgentDescriptor, type IAgentModelInfo, type IAgentResolveSessionConfigParams, type IAgentSessionConfigCompletionsParams, type IAgentSessionMetadata } from '../../common/agentService.js';
+import { AgentSession, type AgentProvider, type AgentSignal, type IActiveClient, type IAgent, type IAgentChats, type IAgentCreateChatForkSource, type IAgentCreateChatOptions, type IAgentCreateChatResult, type IAgentCreateSessionConfig, type IAgentCreateSessionResult, type IAgentDescriptor, type IAgentMaterializeSessionEvent, type IAgentModelInfo, type IAgentResolveSessionConfigParams, type IAgentSessionConfigCompletionsParams, type IAgentSessionMetadata } from '../../common/agentService.js';
 import { ActionType, type ChatAction } from '../../common/state/sessionActions.js';
 import type { ResolveSessionConfigResult, SessionConfigCompletionsResult } from '../../common/state/protocol/commands.js';
 import type { AgentSelection, MessageAttachment, ModelSelection, ProtectedResourceMetadata, ToolDefinition } from '../../common/state/protocol/state.js';
@@ -36,6 +36,7 @@ interface IPiSessionRecord {
 	piSessionId?: string;
 	piSessionFile?: string;
 	piSessionName?: string;
+	materialized: boolean;
 	readonly client: IPiSessionClient;
 	readonly disposables: DisposableStore;
 	readonly queuedTurns: IPiQueuedTurn[];
@@ -71,6 +72,9 @@ export class PiAgent extends Disposable implements IAgent {
 	private readonly _onDidSessionProgress = this._register(new Emitter<AgentSignal>());
 	readonly onDidSessionProgress = this._onDidSessionProgress.event;
 
+	private readonly _onDidMaterializeSession = this._register(new Emitter<IAgentMaterializeSessionEvent>());
+	readonly onDidMaterializeSession = this._onDidMaterializeSession.event;
+
 	private readonly _models = observableValue<readonly IAgentModelInfo[]>(this, []);
 	readonly models: IObservable<readonly IAgentModelInfo[]> = this._models;
 
@@ -98,7 +102,9 @@ export class PiAgent extends Disposable implements IAgent {
 		sendMessage: async (chat: URI, prompt: string, _attachments?: readonly MessageAttachment[], turnId?: string, _senderClientId?: string): Promise<void> => {
 			const record = await this._getOrCreateRecordForChat(chat);
 			record.modifiedTime = Date.now();
-			void this._persistRecord(record);
+			if (record.materialized) {
+				void this._persistRecord(record);
+			}
 			if (record.activeTurn) {
 				const queuedTurn: IPiQueuedTurn = { id: generateUuid(), turnId: turnId ?? generateUuid(), chat, prompt };
 				record.queuedTurns.push(queuedTurn);
@@ -109,7 +115,7 @@ export class PiAgent extends Disposable implements IAgent {
 					message: { text: prompt, origin: { kind: MessageKind.User } },
 				});
 				try {
-					await record.client.request('prompt', { message: prompt, streamingBehavior: 'followUp' });
+					await record.client.request('follow_up', { message: prompt });
 				} catch (error) {
 					removeQueuedTurn(record, queuedTurn.id);
 					this._fireChatAction(chat, { type: ActionType.ChatPendingMessageRemoved, kind: PendingMessageKind.Queued, id: queuedTurn.id });
@@ -121,6 +127,7 @@ export class PiAgent extends Disposable implements IAgent {
 			const state: IPiTurnMapState = { turnId: turnId ?? generateUuid(), prompt, toolCalls: new Map() };
 			record.activeTurn = { chat, state };
 			this._fireChatAction(chat, startPiTurn(state.turnId, prompt));
+			this._materializeRecord(record);
 			try {
 				await record.client.request('prompt', { message: prompt });
 			} catch (error) {
@@ -174,12 +181,12 @@ export class PiAgent extends Disposable implements IAgent {
 		const piSessionFile = typeof stateData?.sessionFile === 'string' ? stateData.sessionFile : undefined;
 		const piSessionName = typeof stateData?.sessionName === 'string' ? stateData.sessionName : undefined;
 		const actualSession = config?.session ?? AgentSession.uri(this.id, piSessionId ? sanitizePiSessionId(piSessionId) : `pi-session-${this._nextSessionId++}`);
-		const record = this._registerSessionRecord({ session: actualSession, startTime: now, modifiedTime: now, workingDirectory, summary: piSessionName || summary, piSessionId, piSessionFile, piSessionName, client });
-		void this._persistRecord(record);
+		this._registerSessionRecord({ session: actualSession, startTime: now, modifiedTime: now, workingDirectory, summary: piSessionName || summary, piSessionId, piSessionFile, piSessionName, materialized: false, client });
 		return {
 			session: actualSession,
 			workingDirectory,
 			project: workingDirectory ? { uri: workingDirectory, displayName: basename(workingDirectory.fsPath) || workingDirectory.fsPath } : undefined,
+			provisional: true,
 		};
 	}
 
@@ -227,7 +234,9 @@ export class PiAgent extends Disposable implements IAgent {
 	async listSessions(): Promise<IAgentSessionMetadata[]> {
 		const sessions = new Map<string, IAgentSessionMetadata>();
 		for (const record of this._sessions.values()) {
-			sessions.set(AgentSession.id(record.session), this._toMetadata(record));
+			if (record.materialized) {
+				sessions.set(AgentSession.id(record.session), this._toMetadata(record));
+			}
 		}
 		for (const stored of await this._sessionStore?.list() ?? []) {
 			if (!sessions.has(AgentSession.id(stored.session))) {
@@ -240,7 +249,7 @@ export class PiAgent extends Disposable implements IAgent {
 	async getSessionMetadata(session: URI): Promise<IAgentSessionMetadata | undefined> {
 		const record = this._sessions.get(AgentSession.id(session));
 		if (record) {
-			return this._toMetadata(record);
+			return record.materialized ? this._toMetadata(record) : undefined;
 		}
 		const stored = await this._sessionStore?.read(session);
 		return stored ? this._storedToMetadata(stored) : undefined;
@@ -295,6 +304,19 @@ export class PiAgent extends Disposable implements IAgent {
 			record.client.dispose();
 		}
 		this._sessions.clear();
+	}
+
+	private _materializeRecord(record: IPiSessionRecord): void {
+		if (record.materialized) {
+			return;
+		}
+		record.materialized = true;
+		void this._persistRecord(record);
+		this._onDidMaterializeSession.fire({
+			session: record.session,
+			workingDirectory: record.workingDirectory,
+			project: record.workingDirectory ? { uri: record.workingDirectory, displayName: basename(record.workingDirectory.fsPath) || record.workingDirectory.fsPath } : undefined,
+		});
 	}
 
 	private _handlePiEvent(record: IPiSessionRecord, event: PiRpcMessage): void {
@@ -396,6 +418,7 @@ export class PiAgent extends Disposable implements IAgent {
 				piSessionId: typeof stateData?.sessionId === 'string' ? stateData.sessionId : stored.piSessionId,
 				piSessionFile: typeof stateData?.sessionFile === 'string' ? stateData.sessionFile : stored.piSessionFile,
 				piSessionName: typeof stateData?.sessionName === 'string' ? stateData.sessionName : stored.piSessionName,
+				materialized: true,
 				client,
 			});
 			void this._persistRecord(record);
@@ -579,8 +602,11 @@ function createPiChatError(turnId: string, error: unknown, stderr: string): Chat
 function formatPiSetupError(error: unknown, stderr: string): string {
 	const message = getErrorMessage(error);
 	const detail = appendStderr(message, stderr);
+	if (isMissingNodeExecutableError(error, message)) {
+		return `Pi Agent could not start because Node.js was not found in the Agent Host environment. Install Node.js or launch from a shell where \`node\` is on PATH, then try again.${detail ? ` Details: ${detail}` : ''}`;
+	}
 	if (isMissingExecutableError(error, message)) {
-		return `Pi CLI was not found. Install Pi and make sure the \`pi\` command is on PATH, then try again.${detail ? ` Details: ${detail}` : ''}`;
+		return `Pi Agent could not start because the Pi RPC entry point could not be launched.${detail ? ` Details: ${detail}` : ''}`;
 	}
 	if (isAuthError(message)) {
 		return `Pi Agent could not start because Pi is not signed in. Sign in to Pi from your terminal, then try again.${detail ? ` Details: ${detail}` : ''}`;
@@ -634,6 +660,10 @@ function getErrorMessage(error: unknown): string {
 
 function isMissingExecutableError(error: unknown, message: string): boolean {
 	return getErrorCode(error) === 'ENOENT' || /\bENOENT\b|command not found|not found/i.test(message);
+}
+
+function isMissingNodeExecutableError(error: unknown, message: string): boolean {
+	return isMissingExecutableError(error, message) && /(?:spawn\s+)?node(?:\.exe)?\b/i.test(message);
 }
 
 function getErrorCode(error: unknown): string | undefined {
