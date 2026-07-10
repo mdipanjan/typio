@@ -514,6 +514,13 @@
 	max-width: none;
 }
 
+/* The chat right rail replaces the native transcript scroll indicator in the
+ * Sessions window. Keep wheel/keyboard scrolling via the list itself, but hide
+ * Monaco's duplicate vertical scrollbar for the main chat transcript. */
+.monaco-workbench.agent-sessions-workbench .part.sessionspart .interactive-list > .monaco-list > .monaco-scrollable-element > .scrollbar.vertical {
+	display: none !important;
+}
+
 .monaco-workbench.vs.agent-sessions-workbench .part.sessionspart .interactive-list > .monaco-list > .monaco-scrollable-element > .monaco-list-rows {
 	background: transparent !important;
 }

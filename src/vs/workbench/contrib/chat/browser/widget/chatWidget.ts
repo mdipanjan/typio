@@ -71,7 +71,7 @@ import { ILanguageModelToolsService, isToolSet } from '../../common/tools/langua
 import { IHandOff, PromptHeader } from '../../common/promptSyntax/promptFileParser.js';
 import { IPromptsService, PromptsStorage } from '../../common/promptSyntax/service/promptsService.js';
 import { GENERATE_AGENT_INSTRUCTIONS_COMMAND_ID, handleModeSwitch } from '../actions/chatActions.js';
-import { ChatTreeItem, IChatAcceptInputOptions, IChatAccessibilityService, IChatCodeBlockInfo, IChatFileTreeInfo, IChatListItemRendererOptions, IChatWidget, IChatWidgetService, IChatWidgetViewContext, IChatWidgetViewModelChangeEvent, IChatWidgetViewOptions, isIChatResourceViewContext, isIChatViewViewContext } from '../chat.js';
+import { ChatTreeItem, IChatAcceptInputOptions, IChatAccessibilityService, IChatCodeBlockInfo, IChatFileTreeInfo, IChatListItemRendererOptions, IChatWidget, IChatWidgetScrollMetrics, IChatWidgetService, IChatWidgetViewContext, IChatWidgetViewModelChangeEvent, IChatWidgetViewOptions, isIChatResourceViewContext, isIChatViewViewContext } from '../chat.js';
 import { ChatAttachmentModel } from '../attachments/chatAttachmentModel.js';
 import { IChatAttachmentResolveService } from '../attachments/chatAttachmentResolveService.js';
 import { ChatDynamicVariableModel } from '../attachments/chatDynamicVariables.js';
@@ -735,6 +735,24 @@ export class ChatWidget extends Disposable implements IChatWidget {
 
 	set scrollTop(value: number) {
 		this.listWidget.scrollTop = value;
+	}
+
+	getScrollMetrics(): IChatWidgetScrollMetrics {
+		const scrollTop = this.listWidget.scrollTop;
+		const scrollHeight = this.listWidget.scrollHeight;
+		const renderHeight = this.listWidget.renderHeight;
+		const contentHeight = this.listWidget.contentHeight;
+		return {
+			scrollTop,
+			scrollHeight,
+			renderHeight,
+			contentHeight,
+			hasOverflow: scrollHeight > renderHeight + 1,
+		};
+	}
+
+	setScrollTop(scrollTop: number): void {
+		this.listWidget.scrollTop = scrollTop;
 	}
 
 	get attachmentModel(): ChatAttachmentModel {

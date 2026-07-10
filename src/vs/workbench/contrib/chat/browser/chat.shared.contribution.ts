@@ -167,6 +167,7 @@ import { ChatVariablesService } from './attachments/chatVariables.js';
 import { ChatWidget } from './widget/chatWidget.js';
 import { ChatCodeBlockContextProviderService } from './codeBlockContextProviderService.js';
 import { ChatDynamicVariableModel } from './attachments/chatDynamicVariables.js';
+import { ChatRightRailContrib } from './widget/chatRightRailContrib.js';
 import { ChatImplicitContextContribution } from './attachments/chatImplicitContext.js';
 import './widget/input/editor/chatInputCompletions.js';
 import './widget/input/editor/agentHostInputCompletions.js';
@@ -2637,4 +2638,4 @@ registerSingleton(IChatTipService, ChatTipService, InstantiationType.Delayed);
 registerSingleton(IChatDebugService, ChatDebugServiceImpl, InstantiationType.Delayed);
 registerSingleton(IChatImageCarouselService, ChatImageCarouselService, InstantiationType.Delayed);
 
-ChatWidget.CONTRIBS.push(ChatDynamicVariableModel);
+ChatWidget.CONTRIBS.push(ChatDynamicVariableModel, ChatRightRailContrib);
